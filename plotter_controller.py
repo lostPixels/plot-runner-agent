@@ -289,7 +289,7 @@ class PlotterController:
             params = params or {}
 
             # Initialize for utility mode
-            self.nextdraw = NextDraw()
+            nd = NextDraw()
             config = self.config_manager.get_current_config()
             self._apply_config_to_instance(nd, config)
 
