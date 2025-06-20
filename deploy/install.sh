@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 APP_NAME="nextdraw-api"
-APP_USER="pi"
+APP_USER="james"
 APP_DIR="/home/james/plot-runner-agent"
 VENV_DIR="$APP_DIR/venv"
 SERVICE_FILE="/etc/systemd/system/$APP_NAME.service"
