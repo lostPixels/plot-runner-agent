@@ -8,29 +8,29 @@ import time
 import threading
 from datetime import datetime
 import logging
-
-try:
-    from nextdraw import NextDraw
-except ImportError:
-    # For development/testing when NextDraw library is not available
-    class NextDrawOptions:
-        def __init__(self):
-            self.mode = None
-            self.utility_cmd = None
-            self.dist = 0.0
-    class NextDraw:
-        def __init__(self):
-            self.options = NextDrawOptions()
-        def plot_setup(self, *args, **kwargs):
-            pass
-        def plot_run(self, *args, **kwargs):
-            return True
-        def interactive(self):
-            pass
-        def connect(self):
-            return True
-        def disconnect(self):
-            pass
+from nextdraw import NextDraw
+# try:
+#     from nextdraw import NextDraw
+# except ImportError:
+#     # For development/testing when NextDraw library is not available
+#     class NextDrawOptions:
+#         def __init__(self):
+#             self.mode = None
+#             self.utility_cmd = None
+#             self.dist = 0.0
+#     class NextDraw:
+#         def __init__(self):
+#             self.options = NextDrawOptions()
+#         def plot_setup(self, *args, **kwargs):
+#             pass
+#         def plot_run(self, *args, **kwargs):
+#             return True
+#         def interactive(self):
+#             pass
+#         def connect(self):
+#             return True
+#         def disconnect(self):
+#             pass
 
 logger = logging.getLogger(__name__)
 
