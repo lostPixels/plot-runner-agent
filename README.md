@@ -96,7 +96,7 @@ pip3 install --user https://software-download.bantamtools.com/nd/api/nextdraw_ap
 #### 3. Application Setup
 
 ```bash
-cd /home/pi/plot-runner-agent
+cd /home/james/plot-runner-agent
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -305,7 +305,7 @@ curl -X POST http://localhost/update \
 ### Manual Updates
 
 ```bash
-cd /home/pi/plot-runner-agent
+cd /home/james/plot-runner-agent
 ./update.sh
 ```
 
@@ -347,16 +347,16 @@ lsusb | grep -i axidraw
 
 ### Log Locations
 
-- Application logs: `/home/pi/plot-runner-agent/logs/app.log`
+- Application logs: `/home/james/plot-runner-agent/logs/app.log`
 - System logs: `sudo journalctl -u nextdraw-api`
 - Nginx logs: `/var/log/nginx/`
-- Gunicorn logs: `/home/pi/plot-runner-agent/logs/gunicorn*.log`
+- Gunicorn logs: `/home/james/plot-runner-agent/logs/gunicorn*.log`
 
 ### Log Monitoring
 
 ```bash
 # Real-time application logs
-tail -f /home/pi/plot-runner-agent/logs/app.log
+tail -f /home/james/plot-runner-agent/logs/app.log
 
 # Real-time system logs
 sudo journalctl -u nextdraw-api -f
@@ -396,7 +396,7 @@ sudo systemctl status nextdraw-api
 sudo journalctl -u nextdraw-api -n 50
 
 # Check Python environment
-cd /home/pi/plot-runner-agent
+cd /home/james/plot-runner-agent
 source venv/bin/activate
 python -c "import nextdraw; print('NextDraw imported successfully')"
 ```
@@ -405,8 +405,8 @@ python -c "import nextdraw; print('NextDraw imported successfully')"
 
 ```bash
 # Fix file permissions
-sudo chown -R pi:pi /home/pi/plot-runner-agent
-chmod +x /home/pi/plot-runner-agent/app.py
+sudo chown -R pi:pi /home/james/plot-runner-agent
+chmod +x /home/james/plot-runner-agent/app.py
 
 # Check sudo permissions for restart
 sudo -l | grep systemctl
@@ -430,7 +430,7 @@ sudo ufw status
 
 ```bash
 # Full system diagnostic
-cd /home/pi/plot-runner-agent
+cd /home/james/plot-runner-agent
 ./diagnose.sh
 
 # Manual diagnostic steps
@@ -467,13 +467,13 @@ For multiple plotters, deploy separate instances:
 
 ```bash
 # Plotter 1 (default)
-/home/pi/plot-runner-agent-1 (port 5001)
+/home/james/plot-runner-agent-1 (port 5001)
 
 # Plotter 2
-/home/pi/plot-runner-agent-2 (port 5002)
+/home/james/plot-runner-agent-2 (port 5002)
 
 # Plotter 3
-/home/pi/plot-runner-agent-3 (port 5003)
+/home/james/plot-runner-agent-3 (port 5003)
 ```
 
 Each instance should have:
@@ -515,14 +515,14 @@ import requests
 class NextDrawClient:
     def __init__(self, base_url):
         self.base_url = base_url
-    
+
     def submit_plot(self, svg_content, config=None):
         response = requests.post(f"{self.base_url}/plot", json={
             "svg_content": svg_content,
             "config": config or {}
         })
         return response.json()
-    
+
     def get_status(self):
         response = requests.get(f"{self.base_url}/status")
         return response.json()
@@ -539,7 +539,7 @@ class NextDrawClient {
     constructor(baseUrl) {
         this.baseUrl = baseUrl;
     }
-    
+
     async submitPlot(svgContent, config = {}) {
         const response = await fetch(`${this.baseUrl}/plot`, {
             method: 'POST',
@@ -551,7 +551,7 @@ class NextDrawClient {
         });
         return response.json();
     }
-    
+
     async getStatus() {
         const response = await fetch(`${this.baseUrl}/status`);
         return response.json();

@@ -11,7 +11,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-APP_DIR="/home/pi/plot-runner-agent"
+APP_DIR="/home/james/plot-runner-agent"
 SERVICE_NAME="nextdraw-api"
 
 echo -e "${BLUE}NextDraw API Diagnostic Script${NC}"

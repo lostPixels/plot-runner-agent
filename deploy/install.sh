@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 # Configuration
 APP_NAME="nextdraw-api"
 APP_USER="pi"
-APP_DIR="/home/pi/plot-runner-agent"
+APP_DIR="/home/james/plot-runner-agent"
 VENV_DIR="$APP_DIR/venv"
 SERVICE_FILE="/etc/systemd/system/$APP_NAME.service"
 NGINX_CONFIG="/etc/nginx/sites-available/$APP_NAME"
@@ -138,7 +138,7 @@ if [ -f "deploy/$APP_NAME.service" ]; then
     sudo cp "deploy/$APP_NAME.service" "$SERVICE_FILE"
 
     # Update service file paths if needed
-    sudo sed -i "s|/home/pi/plot-runner-agent|$APP_DIR|g" "$SERVICE_FILE"
+    sudo sed -i "s|/home/james/plot-runner-agent|$APP_DIR|g" "$SERVICE_FILE"
 
     sudo systemctl daemon-reload
     sudo systemctl enable "$APP_NAME"
