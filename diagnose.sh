@@ -84,12 +84,35 @@ echo -e "${BLUE}Python Environment:${NC}"
 PYTHON_VERSION=$(python3 --version)
 echo "Python: $PYTHON_VERSION"
 
+# Check for required system packages
+echo "System Python packages:"
+for pkg in python3-venv python3-dev python3-full libusb-1.0-0-dev libudev-dev; do
+    if dpkg -l | grep -q " $pkg "; then
+        echo -e "  ${GREEN}✓${NC} $pkg installed"
+    else
+        echo -e "  ${RED}✗${NC} $pkg not installed"
+    fi
+done
+
 if [[ -d "$APP_DIR/venv" ]]; then
     echo -e "${GREEN}✓${NC} Virtual environment exists"
     VENV_PYTHON="$APP_DIR/venv/bin/python"
     if [[ -f "$VENV_PYTHON" ]]; then
         VENV_VERSION=$($VENV_PYTHON --version)
         echo "  Virtual env Python: $VENV_VERSION"
+    fi
+
+    # Check venv structure
+    if [[ -f "$APP_DIR/venv/bin/activate" ]]; then
+        echo -e "  ${GREEN}✓${NC} Activation script exists"
+    else
+        echo -e "  ${RED}✗${NC} Activation script missing"
+    fi
+
+    if [[ -f "$APP_DIR/venv/bin/pip" ]]; then
+        echo -e "  ${GREEN}✓${NC} pip exists in venv"
+    else
+        echo -e "  ${RED}✗${NC} pip missing from venv"
     fi
 else
     echo -e "${RED}✗${NC} Virtual environment missing"
@@ -100,14 +123,25 @@ echo -e "${BLUE}NextDraw Library Check:${NC}"
 cd "$APP_DIR"
 if [[ -f "venv/bin/activate" ]]; then
     source venv/bin/activate
-    if python -c "import nextdraw; print('NextDraw version:', nextdraw.__version__)" 2>/dev/null; then
+    echo "Checking for NextDraw module..."
+    if python -c "import nextdraw; print('NextDraw version:', getattr(nextdraw, '__version__', 'unknown'))" 2>/dev/null; then
         echo -e "${GREEN}✓${NC} NextDraw library accessible"
+
+        # List key installed packages
+        echo "Python packages in virtual environment:"
+        pip list | grep -E "(flask|gunicorn|requests|nextdraw)" || echo "  No key packages found"
     else
         echo -e "${RED}✗${NC} NextDraw library not accessible"
+        echo "Error details:"
+        python -c "import nextdraw" 2>&1 | head -3
+
+        echo -e "${YELLOW}⚠${NC} Try reinstalling with:"
+        echo "  source venv/bin/activate && pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip"
     fi
     deactivate
 else
     echo -e "${RED}✗${NC} Cannot activate virtual environment"
+    echo -e "${YELLOW}⚠${NC} Try recreating with: python3 -m venv --clear $APP_DIR/venv"
 fi
 echo
 
@@ -129,6 +163,27 @@ if systemctl is-active --quiet nginx; then
     echo -e "${GREEN}✓${NC} nginx service is running"
 else
     echo -e "${RED}✗${NC} nginx service is not running"
+fi
+
+# Check service configuration
+if [[ -f "/etc/systemd/system/$SERVICE_NAME.service" ]]; then
+    echo "Service configuration:"
+    VENV_PATH=$(grep "Environment=PATH=" /etc/systemd/system/$SERVICE_NAME.service | grep -o "/.*bin")
+    EXEC_PATH=$(grep "ExecStart=" /etc/systemd/system/$SERVICE_NAME.service | grep -o "/.*python")
+
+    if [[ "$VENV_PATH" == *"venv"* ]]; then
+        echo -e "  ${GREEN}✓${NC} Service using virtual environment path"
+    else
+        echo -e "  ${RED}✗${NC} Service not using virtual environment path"
+        echo "    Found: $VENV_PATH"
+    fi
+
+    if [[ "$EXEC_PATH" == *"venv"* ]]; then
+        echo -e "  ${GREEN}✓${NC} Service using virtual environment Python"
+    else
+        echo -e "  ${RED}✗${NC} Service not using virtual environment Python"
+        echo "    Found: $EXEC_PATH"
+    fi
 fi
 echo
 
@@ -229,11 +284,11 @@ echo
 # Disk Space Check
 echo -e "${BLUE}Disk Space:${NC}"
 df -h / | tail -1 | awk '{
-    if ($5+0 > 90) 
+    if ($5+0 > 90)
         print "\033[0;31m✗\033[0m Root partition is " $5 " full (critical)"
-    else if ($5+0 > 80) 
+    else if ($5+0 > 80)
         print "\033[1;33m⚠\033[0m Root partition is " $5 " full (warning)"
-    else 
+    else
         print "\033[0;32m✓\033[0m Root partition is " $5 " full (ok)"
 }'
 echo
@@ -273,9 +328,29 @@ else
     echo "3. Check service logs: sudo journalctl -u $SERVICE_NAME -f"
     echo "4. Verify USB permissions: sudo udevadm trigger"
     echo "5. Test Python import: cd $APP_DIR && source venv/bin/activate && python -c 'import nextdraw'"
+
+    # Display venv fix command if nextdraw import fails
+    if ! (cd "$APP_DIR" && source venv/bin/activate 2>/dev/null && python -c "import nextdraw" 2>/dev/null); then
+        echo -e "\n${YELLOW}Virtual environment issue detected!${NC}"
+        echo "To fix NextDraw installation issues, run:"
+        if [[ -f "$APP_DIR/deploy/fix_nextdraw_install.sh" ]]; then
+            echo "  cd $APP_DIR && bash deploy/fix_nextdraw_install.sh"
+        else
+            echo "  cd $APP_DIR && source venv/bin/activate"
+            echo "  pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip"
+            echo "  sudo systemctl restart $SERVICE_NAME"
+        fi
+    fi
 fi
 
 echo
 echo "For more detailed logs, run:"
 echo "  sudo journalctl -u $SERVICE_NAME -f"
 echo "  tail -f $APP_DIR/logs/app.log"
+echo
+echo "For advanced virtual environment diagnostics, run:"
+if [[ -f "$APP_DIR/deploy/venv_check.sh" ]]; then
+    echo "  cd $APP_DIR && bash deploy/venv_check.sh"
+else
+    echo "  cd $APP_DIR && source venv/bin/activate && python -c 'import sys; print(sys.executable)'"
+fi

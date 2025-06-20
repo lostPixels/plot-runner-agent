@@ -66,9 +66,8 @@ sudo apt install -y \
     libusb-1.0-0-dev \
     libudev-dev
 
-# Install NextDraw Python library
-log "Installing NextDraw Python library..."
-pip3 install --user https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+# We'll install NextDraw Python library in the virtual environment later
+log "Preparing for NextDraw Python library installation..."
 
 # Create application directory if it doesn't exist
 if [ ! -d "$APP_DIR" ]; then
@@ -82,6 +81,14 @@ cd "$APP_DIR"
 log "Creating Python virtual environment..."
 python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
+
+# Install python3-full if needed for venv
+if [ $? -ne 0 ]; then
+    log "Virtual environment creation failed. Installing python3-full and retrying..."
+    sudo apt install -y python3-full
+    python3 -m venv "$VENV_DIR"
+    source "$VENV_DIR/bin/activate"
+fi
 
 # Upgrade pip
 pip install --upgrade pip
@@ -98,6 +105,12 @@ fi
 # Install NextDraw library in virtual environment
 log "Installing NextDraw library in virtual environment..."
 pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+if [ $? -ne 0 ]; then
+    warning "NextDraw installation failed. This might be because we're missing development libraries."
+    warning "Installing additional development packages and retrying..."
+    sudo apt install -y python3-dev libusb-1.0-0-dev libudev-dev
+    pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+fi
 
 # Set up USB permissions for NextDraw
 log "Setting up USB permissions..."
@@ -123,10 +136,10 @@ mkdir -p logs uploads output
 if [ -f "deploy/$APP_NAME.service" ]; then
     log "Installing systemd service..."
     sudo cp "deploy/$APP_NAME.service" "$SERVICE_FILE"
-    
+
     # Update service file paths if needed
     sudo sed -i "s|/home/pi/plot-runner-agent|$APP_DIR|g" "$SERVICE_FILE"
-    
+
     sudo systemctl daemon-reload
     sudo systemctl enable "$APP_NAME"
 else
@@ -186,16 +199,16 @@ sudo tee "$NGINX_CONFIG" > /dev/null <<EOF
 server {
     listen 80;
     server_name _;
-    
+
     # Large file upload settings
     client_max_body_size 1G;
     client_body_buffer_size 128k;
     client_body_timeout 300s;
     client_header_timeout 300s;
-    
+
     # Temporary file settings for large uploads
     client_body_temp_path /tmp/nginx_uploads 1 2;
-    
+
     # Main application proxy
     location / {
         proxy_pass http://127.0.0.1:5000;
@@ -203,23 +216,23 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        
+
         # WebSocket support
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-        
+
         # Extended timeouts for large uploads and long plots
         proxy_connect_timeout 300s;
         proxy_send_timeout 300s;
         proxy_read_timeout 300s;
-        
+
         # Buffer settings for large requests
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
     }
-    
+
     # Special handling for upload endpoints
     location ~ ^/(plot|plot/upload|plot/chunk) {
         proxy_pass http://127.0.0.1:5000;
@@ -227,50 +240,50 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        
+
         # Extended settings for large file uploads
         client_max_body_size 1G;
         client_body_timeout 600s;
         proxy_connect_timeout 600s;
         proxy_send_timeout 600s;
         proxy_read_timeout 600s;
-        
+
         # Disable buffering for uploads
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
-        
+
         # Progress tracking
         proxy_set_header X-Content-Length \$content_length;
     }
-    
+
     # Static file serving for uploads/downloads
     location /uploads/ {
         alias $APP_DIR/uploads/;
         expires 1h;
         add_header Cache-Control "public, immutable";
-        
+
         # Enable range requests for large files
         add_header Accept-Ranges bytes;
-        
+
         # Security headers
         add_header X-Content-Type-Options nosniff;
         add_header X-Frame-Options DENY;
     }
-    
+
     location /output/ {
         alias $APP_DIR/output/;
         expires 1h;
         add_header Cache-Control "public, immutable";
-        
+
         # Enable range requests for large files
         add_header Accept-Ranges bytes;
-        
+
         # Security headers
         add_header X-Content-Type-Options nosniff;
         add_header X-Frame-Options DENY;
     }
-    
+
     # Health check endpoint optimization
     location /health {
         proxy_pass http://127.0.0.1:5000;
@@ -279,11 +292,11 @@ server {
         proxy_send_timeout 5s;
         proxy_read_timeout 5s;
     }
-    
+
     # Logging
     access_log /var/log/nginx/nextdraw_access.log combined;
     error_log /var/log/nginx/nextdraw_error.log warn;
-    
+
     # Security headers
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
@@ -379,6 +392,8 @@ cd "$(dirname "$0")"
 git pull origin main
 source venv/bin/activate
 pip install -r requirements.txt
+# Also update NextDraw library
+pip install --upgrade https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
 sudo systemctl restart nextdraw-api
 EOF
 chmod +x "$APP_DIR/update.sh"
