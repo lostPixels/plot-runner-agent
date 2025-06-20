@@ -1,0 +1,36 @@
+[Unit]
+Description=NextDraw Plotter API Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/plot-runner-agent
+Environment=PATH=/home/pi/plot-runner-agent/venv/bin
+ExecStart=/home/pi/plot-runner-agent/venv/bin/python /home/pi/plot-runner-agent/app.py
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+# Security settings
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/pi/plot-runner-agent
+ProtectHome=yes
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=512M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nextdraw-api
+
+[Install]
+WantedBy=multi-user.target
