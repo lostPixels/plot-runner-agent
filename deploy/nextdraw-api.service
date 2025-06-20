@@ -5,11 +5,11 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=pi
-Group=pi
+User=james
+Group=james
 WorkingDirectory=/home/james/plot-runner-agent
 Environment=PATH=/home/james/plot-runner-agent/venv/bin
-ExecStart=/home/james/plot-runner-agent/venv/bin/python /home/james/plot-runner-agent/app.py
+ExecStart=/home/james/plot-runner-agent/venv/bin/gunicorn -c gunicorn.conf.py wsgi:application
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed
 Restart=always
