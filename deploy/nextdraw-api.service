@@ -5,11 +5,16 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=james
-Group=james
-WorkingDirectory=/home/james/plot-runner-agent
-Environment=PATH=/home/james/plot-runner-agent/venv/bin
-ExecStart=/home/james/plot-runner-agent/venv/bin/gunicorn -c gunicorn.conf.py wsgi:application
+# Use the actual system username instead of hardcoded "pi"
+User=%USER%
+Group=%USER%
+# Use %HOME% for proper home directory path
+WorkingDirectory=%HOME%/plot-runner-agent
+# Set environment variables for Python
+Environment="PATH=%HOME%/plot-runner-agent/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=%HOME%/plot-runner-agent"
+# Use a script that activates the virtual environment properly
+ExecStart=%HOME%/plot-runner-agent/run_app.sh
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed
 Restart=always
@@ -20,7 +25,7 @@ TimeoutStopSec=30
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/home/james/plot-runner-agent
+ReadWritePaths=%HOME%/plot-runner-agent
 ProtectHome=yes
 
 # Resource limits
