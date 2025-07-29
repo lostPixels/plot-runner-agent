@@ -37,9 +37,8 @@ logger = logging.getLogger(__name__)
 class PlotterController:
     """Controls NextDraw plotter operations"""
 
-    def __init__(self, config_manager, job_queue):
+    def __init__(self, config_manager):
         self.config_manager = config_manager
-        self.job_queue = job_queue
         self.nextdraw = None
         self.status = "DISCONNECTED"
         self.current_job = None
@@ -114,19 +113,19 @@ class PlotterController:
         except Exception as e:
             logger.warning(f"Could not get plotter info: {str(e)}")
 
-    def execute_job(self, job):
-        """Execute a plot job"""
+    def execute_job(self, job_data):
+        """Execute a plot job directly without using queue"""
         try:
             with self.lock:
                 if self.is_plotting:
                     return {"success": False, "error": "Plotter is already busy"}
 
-                self.current_job = job
+                self.current_job = job_data
                 self.is_plotting = True
                 self.is_paused = False
                 self.status = "PLOTTING"
 
-            logger.info(f"Starting plot job: {job['name']}")
+            logger.info(f"Starting plot job: {job_data.get('name', 'Unnamed job')}")
             start_time = time.time()
 
             # Initialize NextDraw for plotting
@@ -137,15 +136,15 @@ class PlotterController:
             self._apply_config(config)
 
             # Apply job-specific config overrides
-            job_config = job.get('config_overrides', {})
+            job_config = job_data.get('config_overrides', {})
             for key, value in job_config.items():
                 if hasattr(self.nextdraw.options, key):
                     setattr(self.nextdraw.options, key, value)
                     logger.debug(f"Job override: {key} = {value}")
 
             # Setup plot
-            svg_content = job.get('svg_content')
-            svg_file = job.get('svg_file')
+            svg_content = job_data.get('svg_content')
+            svg_file = job_data.get('svg_file')
 
             if svg_content:
                 self.nextdraw.plot_setup(svg_content)
@@ -155,7 +154,7 @@ class PlotterController:
                 return {"success": False, "error": "No valid SVG content or file provided"}
 
             # Handle start_mm parameter for resume plotting
-            start_mm = job.get('start_mm')
+            start_mm = job_data.get('start_mm')
             if start_mm is not None:
                 try:
                     # First adjust the resume position
@@ -385,7 +384,7 @@ class PlotterController:
 
     def is_idle(self):
         """Check if plotter is idle and ready for new jobs"""
-        return self.status == "IDLE" and not self.is_plotting and not self.is_paused
+        return self.status == "IDLE" or self.status == "DISCONNECTED" and not self.is_plotting
 
     def test_connection(self):
         """Test connection to plotter"""

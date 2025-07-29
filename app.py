@@ -18,7 +18,6 @@ from werkzeug.utils import secure_filename
 
 from plotter_controller import PlotterController
 from config_manager import ConfigManager
-from job_queue import JobQueue
 from remote_update import RemoteUpdateManager
 
 # Initialize Flask app
@@ -47,28 +46,34 @@ logger = logging.getLogger(__name__)
 
 # Initialize core components
 config_manager = ConfigManager()
-job_queue = JobQueue()
-plotter_controller = PlotterController(config_manager, job_queue)
+plotter_controller = PlotterController(config_manager)
 update_manager = RemoteUpdateManager()
 
 # Global status tracking
 app_status = {
     "status": "IDLE",
-    "current_job": None,
+    "job_info": None,
     "error_message": None,
     "last_updated": datetime.now().isoformat(),
     "uptime_start": datetime.now().isoformat()
 }
 
-def update_status(status, job=None, error=None):
+def update_status(status, job_info=None, error=None):
     """Update global application status"""
     global app_status
     app_status.update({
         "status": status,
-        "current_job": job,
         "error_message": error,
         "last_updated": datetime.now().isoformat()
     })
+
+    # If job info is provided, update it
+    if job_info:
+        app_status["job_info"] = job_info
+    elif status == "IDLE":
+        # Clear job info when going to IDLE state
+        app_status["job_info"] = None
+
     logger.info(f"Status updated: {status}")
 
 @app.route('/health', methods=['GET'])
@@ -85,11 +90,9 @@ def get_status():
     """Get current plotter status"""
     try:
         plotter_status = plotter_controller.get_status()
-        job_status = job_queue.get_status()
 
         return jsonify({
             "plotter": plotter_status,
-            "queue": job_status,
             "app": app_status,
             "config": config_manager.get_current_config()
         })
@@ -115,8 +118,14 @@ def submit_plot_json():
     """Handle JSON plot submission"""
     data = request.get_json()
 
+    logger.info("DIRECT EXECUTE JOB")
+
     if not data:
         return jsonify({"error": "No data provided"}), 400
+
+    # Check if plotter is busy
+    if not plotter_controller.is_idle():
+        return jsonify({"error": "Plotter is busy. Cannot start new job."}), 409
 
     # Check SVG content size for JSON submissions
     svg_content = data.get('svg_content', '')
@@ -143,27 +152,39 @@ def submit_plot_json():
         "svg_content": data.get('svg_content'),
         "svg_file": data.get('svg_file'),
         "config_overrides": data.get('config', {}),
-        "priority": data.get('priority', 1),
         "name": data.get('name', f"Job_{int(time.time())}"),
         "description": data.get('description', ''),
         "start_mm": start_mm,
         "submitted_at": datetime.now().isoformat()
     }
 
-    job_id = job_queue.add_job(job_data)
+    # Update application status with job info
+    update_status("PLOTTING", job_data)
+    
+    # Execute job in a new thread
+    def execute_in_thread():
+        try:
+            result = plotter_controller.execute_job(job_data)
+            if result.get('success', False):
+                update_status("IDLE", None)
+            else:
+                update_status("ERROR", None, result.get('error', 'Unknown error'))
+        except Exception as e:
+            update_status("ERROR", None, str(e))
 
-    # Start processing if plotter is idle
-    if plotter_controller.is_idle():
-        threading.Thread(target=process_jobs, daemon=True).start()
+    threading.Thread(target=execute_in_thread, daemon=True).start()
 
     return jsonify({
-        "job_id": job_id,
-        "status": "queued",
-        "position": job_queue.get_position(job_id)
+        "svg_file": data.get('svg_file'),
+        "status": "started",
     }), 201
 
 def submit_plot_multipart():
     """Handle multipart file upload"""
+    # Check if plotter is busy
+    if not plotter_controller.is_idle():
+        return jsonify({"error": "Plotter is busy. Cannot start new job."}), 409
+
     # Create uploads directory if it doesn't exist
     upload_dir = app.config['UPLOAD_FOLDER']
     if not os.path.exists(upload_dir):
@@ -208,7 +229,6 @@ def submit_plot_multipart():
         job_data = {
             "svg_file": filepath,
             "config_overrides": json.loads(request.form.get('config', '{}')),
-            "priority": int(request.form.get('priority', 1)),
             "name": request.form.get('name', f"Upload_{timestamp}"),
             "description": request.form.get('description', ''),
             "start_mm": start_mm,
@@ -217,16 +237,27 @@ def submit_plot_multipart():
             "original_filename": file.filename
         }
 
-        job_id = job_queue.add_job(job_data)
+        # Update application status with job info
+        update_status("PLOTTING", job_data)
 
-        # Start processing if plotter is idle
-        if plotter_controller.is_idle():
-            threading.Thread(target=process_jobs, daemon=True).start()
+        # Execute job in a new thread
+        def execute_in_thread():
+            try:
+                result = plotter_controller.execute_job(job_data)
+                if result.get('success', False):
+                    update_status("IDLE", None)
+                else:
+                    update_status("ERROR", None, result.get('error', 'Unknown error'))
+            except Exception as e:
+                update_status("ERROR", None, str(e))
+                # Clean up file if execution failed
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+
+        threading.Thread(target=execute_in_thread, daemon=True).start()
 
         return jsonify({
-            "job_id": job_id,
-            "status": "queued",
-            "position": job_queue.get_position(job_id),
+            "status": "started",
             "file_size": file_size,
             "uploaded_filename": filename
         }), 201
@@ -334,46 +365,26 @@ def upload_plot_chunk():
 
 @app.route('/jobs', methods=['GET'])
 def get_jobs():
-    """Get list of all jobs"""
+    """Get current job status"""
     try:
-        return jsonify(job_queue.get_all_jobs())
+        # Return only current job info
+        return jsonify({
+            "current_job": app_status
+        })
     except Exception as e:
         logger.error(f"Error getting jobs: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/jobs/<job_id>', methods=['GET'])
-def get_job(job_id):
-    """Get specific job details"""
-    try:
-        job = job_queue.get_job(job_id)
-        if not job:
-            return jsonify({"error": "Job not found"}), 404
-        return jsonify(job)
-    except Exception as e:
-        logger.error(f"Error getting job {job_id}: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+# Removed job details endpoint as there is no longer a job queue
 
-@app.route('/jobs/<job_id>', methods=['DELETE'])
-def cancel_job(job_id):
-    """Cancel a job"""
-    try:
-        if job_queue.cancel_job(job_id):
-            # If this is the current job, stop the plotter
-            if app_status.get("current_job") == job_id:
-                plotter_controller.stop()
-            return jsonify({"message": "Job cancelled"})
-        else:
-            return jsonify({"error": "Job not found or cannot be cancelled"}), 404
-    except Exception as e:
-        logger.error(f"Error cancelling job {job_id}: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+# Removed job cancel endpoint as there is no longer a job queue
 
 @app.route('/pause', methods=['POST'])
 def pause_plotting():
     """Pause current plotting job"""
     try:
         if plotter_controller.pause():
-            update_status("PAUSED", app_status.get("current_job"))
+            update_status("PAUSED", app_status.get("job_info"))
             return jsonify({"message": "Plotting paused"})
         else:
             return jsonify({"error": "No active job to pause"}), 400
@@ -386,7 +397,7 @@ def resume_plotting():
     """Resume paused plotting job"""
     try:
         if plotter_controller.resume():
-            update_status("PLOTTING", app_status.get("current_job"))
+            update_status("PLOTTING", app_status.get("job_info"))
             return jsonify({"message": "Plotting resumed"})
         else:
             return jsonify({"error": "No paused job to resume"}), 400
@@ -397,11 +408,13 @@ def resume_plotting():
 @app.route('/stop', methods=['POST'])
 def stop_plotting():
     """Stop current plotting job"""
+    print("Stopping plotting job")
     try:
         if plotter_controller.stop():
-            update_status("IDLE")
+            update_status("IDLE", None)
             return jsonify({"message": "Plotting stopped"})
         else:
+            print("No active job to stop")
             return jsonify({"error": "No active job to stop"}), 400
     except Exception as e:
         logger.error(f"Error stopping: {str(e)}")
@@ -488,45 +501,7 @@ def get_logs():
         logger.error(f"Error getting logs: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-def process_jobs():
-    """Background job processor"""
-    while True:
-        try:
-            if not plotter_controller.is_idle():
-                time.sleep(1)
-                continue
-
-            job = job_queue.get_next_job()
-            if not job:
-                break
-
-            logger.info(f"Starting job {job['id']}: {job['name']}")
-            update_status("PLOTTING", job['id'])
-
-            try:
-                # Execute the plot job
-                result = plotter_controller.execute_job(job)
-
-                if result['success']:
-                    job_queue.complete_job(job['id'], result)
-                    logger.info(f"Job {job['id']} completed successfully")
-                else:
-                    job_queue.fail_job(job['id'], result.get('error', 'Unknown error'))
-                    logger.error(f"Job {job['id']} failed: {result.get('error')}")
-
-            except Exception as e:
-                error_msg = str(e)
-                job_queue.fail_job(job['id'], error_msg)
-                logger.error(f"Job {job['id']} failed with exception: {error_msg}")
-                update_status("ERROR", job['id'], error_msg)
-                break
-
-            update_status("IDLE")
-
-        except Exception as e:
-            logger.error(f"Error in job processor: {str(e)}")
-            update_status("ERROR", None, str(e))
-            break
+# Process jobs function removed - direct execution implemented in submit functions
 
 @app.errorhandler(404)
 def not_found(error):
