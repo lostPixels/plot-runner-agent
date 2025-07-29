@@ -298,7 +298,7 @@ class PlotterController:
 
             # Execute specific utility commands
             if command == "home":
-                nd.options.utility_cmd = "walk_home"
+                nd.options.utility_cmd = "find_home"
                 result = nd.plot_run()
                 return {"success": True, "message": "Moved to home position"}
 
@@ -341,6 +341,21 @@ class PlotterController:
                 nd.options.mode = "sysinfo"
                 result = nd.plot_run()
                 return {"success": True, "info": result}
+
+            elif command == "go_to_limit":
+                # Go to plotter limit
+                nd.interactive()                # Enter interactive context
+                nd.options.model = 5
+                nd.options.homing = False
+                nd.options.report_time = True
+                nd.options.preview = False
+                nd.options.penlift = 3
+                nd.update()
+                if not nd.connect():
+                    return {"success": False, "message": "No connection"}
+                nd.moveto(34, 22)
+                nd.disconnect()
+                return {"success": True, "message": "Moved to plotter limit (34, 22)"}
 
             else:
                 return {"error": f"Unknown utility command: {command}"}
