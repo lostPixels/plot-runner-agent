@@ -298,7 +298,8 @@ class PlotterController:
 
             # Execute specific utility commands
             if command == "home":
-                nd.options.utility_cmd = "find_home"
+                nd.options.model = 10
+                nd.options.mode = "find_home"
                 result = nd.plot_run()
                 return {"success": True, "message": "Moved to home position"}
 
