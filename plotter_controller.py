@@ -115,6 +115,13 @@ class PlotterController:
         except Exception as e:
             logger.warning(f"Could not get plotter info: {str(e)}")
 
+    def draw_bullseye(self):
+        """Draw a bullseye pattern on the plotter"""
+        opts = {
+            "svg_file": "bullseye.svg"
+        }
+        self.execute_job(opts)
+
     def execute_job(self, job_data):
         """Execute a plot job directly without using queue"""
         try:
@@ -423,6 +430,10 @@ class PlotterController:
                 nd.options.mode = "find_home"
                 result = nd.plot_run()
                 return {"success": True, "message": "Moved to home position"}
+
+            elif command == "bullseye":
+                self.draw_bullseye()
+                return {"success": True, "message": "Draw Bullseye"}
 
             elif command == "raise_pen":
                 nd.options.utility_cmd = "raise_pen"
