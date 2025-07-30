@@ -1,0 +1,239 @@
+---
+- name: Fix Missing Virtual Environment for NextDraw API
+  hosts: raspberry_pis
+  become: yes
+  vars:
+      app_name: nextdraw-api
+      app_user: james
+      app_group: james
+      app_dir: /home/james/plot-runner-agent
+      venv_dir: "{{ app_dir }}/venv"
+      python_version: python3
+
+  tasks:
+      - name: Stop the service first
+        systemd:
+            name: "{{ app_name }}"
+            state: stopped
+        ignore_errors: yes
+
+      - name: Check current virtual environment status
+        stat:
+            path: "{{ venv_dir }}/bin/python"
+        register: venv_python
+
+      - name: Check if requirements.txt exists
+        stat:
+            path: "{{ app_dir }}/requirements.txt"
+        register: requirements_file
+
+      - name: Display current status
+        debug:
+            msg: |
+                Virtual Environment Status:
+                - venv directory: {{ 'EXISTS' if venv_python.stat.exists else 'MISSING' }}
+                - requirements.txt: {{ 'EXISTS' if requirements_file.stat.exists else 'MISSING' }}
+                - App directory: {{ app_dir }}
+
+      - name: Remove broken virtual environment if it exists but Python is missing
+        file:
+            path: "{{ venv_dir }}"
+            state: absent
+        when:
+            - not venv_python.stat.exists
+            - venv_dir is defined
+
+      - name: Ensure Python 3 and venv module are installed
+        apt:
+            name:
+                - python3
+                - python3-venv
+                - python3-pip
+                - python3-dev
+                - python3-full
+            state: present
+            update_cache: yes
+
+      - name: Create virtual environment
+        become: yes
+        become_user: "{{ app_user }}"
+        command: "{{ python_version }} -m venv {{ venv_dir }}"
+        args:
+            creates: "{{ venv_dir }}/bin/activate"
+
+      - name: Verify virtual environment was created
+        stat:
+            path: "{{ venv_dir }}/bin/python"
+        register: venv_verify
+
+      - name: Fail if virtual environment creation failed
+        fail:
+            msg: "Failed to create virtual environment at {{ venv_dir }}"
+        when: not venv_verify.stat.exists
+
+      - name: Upgrade pip in virtual environment
+        become: yes
+        become_user: "{{ app_user }}"
+        pip:
+            name:
+                - pip
+                - setuptools
+                - wheel
+            state: latest
+            virtualenv: "{{ venv_dir }}"
+
+      - name: Install Python dependencies from requirements.txt
+        become: yes
+        become_user: "{{ app_user }}"
+        pip:
+            requirements: "{{ app_dir }}/requirements.txt"
+            virtualenv: "{{ venv_dir }}"
+        when: requirements_file.stat.exists
+
+      - name: Install fallback dependencies if no requirements.txt
+        become: yes
+        become_user: "{{ app_user }}"
+        pip:
+            name:
+                - Flask
+                - Flask-CORS
+                - gunicorn
+                - requests
+                - watchdog
+                - python-dateutil
+            virtualenv: "{{ venv_dir }}"
+        when: not requirements_file.stat.exists
+
+      - name: Install NextDraw library
+        become: yes
+        become_user: "{{ app_user }}"
+        pip:
+            name: https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+            virtualenv: "{{ venv_dir }}"
+        register: nextdraw_install
+        ignore_errors: yes
+
+      - name: Display NextDraw installation result
+        debug:
+            msg: "NextDraw library: {{ 'INSTALLED' if not nextdraw_install.failed else 'FAILED (may work without plotter connected)' }}"
+
+      - name: Test Python imports
+        become: yes
+        become_user: "{{ app_user }}"
+        shell: |
+            cd {{ app_dir }}
+            {{ venv_dir }}/bin/python -c "
+            import sys
+            print(f'Python: {sys.version}')
+            print(f'Executable: {sys.executable}')
+            try:
+                import flask
+                print('✓ Flask installed')
+            except ImportError as e:
+                print(f'✗ Flask missing: {e}')
+            try:
+                import gunicorn
+                print('✓ Gunicorn installed')
+            except ImportError as e:
+                print(f'✗ Gunicorn missing: {e}')
+            try:
+                from app import app
+                print('✓ app.py can be imported')
+            except ImportError as e:
+                print(f'✗ app.py import failed: {e}')
+            "
+        register: import_test
+        ignore_errors: yes
+
+      - name: Display import test results
+        debug:
+            msg: |
+                Import Test Results:
+                {{ import_test.stdout }}
+
+      - name: Fix permissions on virtual environment
+        file:
+            path: "{{ venv_dir }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            recurse: yes
+
+      - name: Update systemd service file to ensure correct Python path
+        lineinfile:
+            path: "/etc/systemd/system/{{ app_name }}.service"
+            regexp: "^ExecStart="
+            line: "ExecStart={{ venv_dir }}/bin/python {{ app_dir }}/app.py"
+        register: service_updated
+
+      - name: Reload systemd if service file was updated
+        systemd:
+            daemon_reload: yes
+        when: service_updated.changed
+
+      - name: Start the service
+        systemd:
+            name: "{{ app_name }}"
+            state: started
+            enabled: yes
+
+      - name: Wait for service to stabilize
+        pause:
+            seconds: 5
+
+      - name: Check service status
+        systemd:
+            name: "{{ app_name }}"
+        register: service_status
+
+      - name: Get service logs if failed
+        shell: journalctl -u {{ app_name }} -n 20 --no-pager
+        register: service_logs
+        when: service_status.status.ActiveState != "active"
+
+      - name: Test API endpoint
+        uri:
+            url: "http://localhost:5000/health"
+            method: GET
+            status_code: 200
+            timeout: 10
+        register: api_test
+        ignore_errors: yes
+
+      - name: Final status report
+        debug:
+            msg: |
+                ========================================
+                Virtual Environment Fix Summary
+                ========================================
+
+                Host: {{ inventory_hostname }}
+
+                Virtual Environment:
+                - Location: {{ venv_dir }}
+                - Python: {{ venv_verify.stat.path if venv_verify.stat.exists else 'NOT FOUND' }}
+                - Created successfully: {{ 'YES' if venv_verify.stat.exists else 'NO' }}
+
+                Service Status:
+                - State: {{ service_status.status.ActiveState }}
+                - Main PID: {{ service_status.status.MainPID | default('N/A') }}
+
+                API Test:
+                - Direct (port 5000): {{ 'WORKING' if api_test.status | default(0) == 200 else 'NOT WORKING' }}
+
+                {% if service_status.status.ActiveState == "active" and api_test.status | default(0) == 200 %}
+                ✓ SUCCESS: Service is running and API is responding!
+                Access at: http://{{ ansible_default_ipv4.address }}/
+                {% else %}
+                ✗ PROBLEM: Service or API not working properly.
+
+                {% if service_status.status.ActiveState != "active" %}
+                Service logs:
+                {{ service_logs.stdout | default('No logs available') }}
+                {% endif %}
+
+                Troubleshooting steps:
+                1. SSH to {{ inventory_hostname }}
+                2. Check venv: ls -la {{ venv_dir }}/bin/
+                3. Test manually: {{ venv_dir }}/bin/python {{ app_dir }}/app.py
+                4. View logs: sudo journalctl -u {{ app_name }} -f
+                {% endif %}

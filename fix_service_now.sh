@@ -58,7 +58,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ReadWritePaths=$APP_DIR
-ProtectHome=yes
+ProtectHome=no
 
 # Resource limits
 LimitNOFILE=65536

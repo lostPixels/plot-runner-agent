@@ -1,0 +1,536 @@
+---
+- name: Deploy NextDraw Plotter API to Raspberry Pis
+  hosts: raspberry_pis
+  become: yes
+  vars:
+      app_name: nextdraw-api
+      app_user: james
+      app_group: james
+      app_dir: /home/james/plot-runner-agent
+      venv_dir: "{{ app_dir }}/venv"
+      service_name: "{{ app_name }}"
+      nginx_config: "/etc/nginx/sites-available/{{ app_name }}"
+      nginx_enabled: "/etc/nginx/sites-enabled/{{ app_name }}"
+      local_project_root: "{{ playbook_dir }}/.." # Path to project root from ansible directory
+      frontend_dir: "{{ local_project_root }}/frontend" # Frontend directory path
+
+  pre_tasks:
+      - name: Build frontend locally before deployment
+        delegate_to: localhost
+        become: no
+        block:
+            - name: Check if frontend directory exists
+              stat:
+                  path: "{{ frontend_dir }}"
+              register: frontend_exists
+              delegate_to: localhost
+
+            - name: Build frontend application
+              when: frontend_exists.stat.exists
+              shell: |
+                  cd {{ frontend_dir }}
+                  npm install
+                  npm run build
+              register: frontend_build
+              failed_when:
+                  - frontend_build.rc != 0
+                  - frontend_exists.stat.exists
+              changed_when: frontend_build.rc == 0
+
+            - name: Display frontend build status
+              debug:
+                  msg: "Frontend build skipped - no frontend directory found"
+              when: not frontend_exists.stat.exists
+
+  tasks:
+      - name: Update APT cache and upgrade system packages
+        apt:
+            update_cache: yes
+            upgrade: dist
+            cache_valid_time: 3600
+
+      - name: Install system dependencies
+        apt:
+            name:
+                - python3
+                - python3-pip
+                - python3-venv
+                - python3-dev
+                - python3-full
+                - git
+                - nginx
+                - supervisor
+                - udev
+                - build-essential
+                - libusb-1.0-0-dev
+                - libudev-dev
+                - curl
+                - wget
+                - rsync
+            state: present
+
+      - name: Create application user
+        user:
+            name: "{{ app_user }}"
+            groups: plugdev,dialout
+            append: yes
+            shell: /bin/bash
+            create_home: yes
+            state: present
+
+      - name: Create application directory structure
+        file:
+            path: "{{ item }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0755"
+        loop:
+            - "{{ app_dir }}"
+            - "{{ app_dir }}/logs"
+            - "{{ app_dir }}/uploads"
+            - "{{ app_dir }}/output"
+            - "/tmp/nginx_uploads"
+
+      - name: Set nginx upload directory permissions
+        file:
+            path: /tmp/nginx_uploads
+            owner: www-data
+            group: www-data
+            mode: "0755"
+            state: directory
+
+      - name: Synchronize application files to Raspberry Pi
+        synchronize:
+            src: "{{ local_project_root }}/"
+            dest: "{{ app_dir }}/"
+            delete: yes
+            recursive: yes
+            checksum: yes
+            rsync_opts:
+                - "--exclude=.git"
+                - "--exclude=__pycache__"
+                - "--exclude=*.pyc"
+                - "--exclude=.env"
+                - "--exclude=venv"
+                - "--exclude=node_modules"
+                - "--exclude=ansible"
+                - "--exclude=.DS_Store"
+                - "--exclude=*.log"
+                - "--exclude=logs/*"
+                - "--exclude=uploads/*"
+                - "--exclude=output/*"
+        become: no
+        become_user: "{{ app_user }}"
+
+      - name: Set ownership of application files
+        file:
+            path: "{{ app_dir }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            recurse: yes
+
+      - name: Create Python virtual environment
+        become: no
+        become_user: "{{ app_user }}"
+        command: python3 -m venv {{ venv_dir }}
+        args:
+            creates: "{{ venv_dir }}/bin/activate"
+
+      - name: Upgrade pip in virtual environment
+        become: no
+        become_user: "{{ app_user }}"
+        pip:
+            name: pip
+            state: latest
+            virtualenv: "{{ venv_dir }}"
+
+      - name: Install Python dependencies from requirements.txt
+        become: no
+        become_user: "{{ app_user }}"
+        pip:
+            requirements: "{{ app_dir }}/requirements.txt"
+            virtualenv: "{{ venv_dir }}"
+            virtualenv_command: python3 -m venv
+
+      - name: Install NextDraw Python library
+        become: no
+        become_user: "{{ app_user }}"
+        pip:
+            name: https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+            virtualenv: "{{ venv_dir }}"
+        register: nextdraw_install
+        ignore_errors: yes
+
+      - name: Retry NextDraw installation with updated system packages if failed
+        when: nextdraw_install.failed
+        block:
+            - name: Install additional development packages
+              apt:
+                  name:
+                      - python3-dev
+                      - libusb-1.0-0-dev
+                      - libudev-dev
+                  state: present
+
+            - name: Retry NextDraw Python library installation
+              become: no
+              become_user: "{{ app_user }}"
+              pip:
+                  name: https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+                  virtualenv: "{{ venv_dir }}"
+
+      - name: Configure USB permissions for NextDraw plotters
+        copy:
+            content: |
+                # NextDraw USB permissions
+                SUBSYSTEM=="usb", ATTR{idVendor}=="04d8", ATTR{idProduct}=="fd92", MODE="0666", GROUP="plugdev"
+                SUBSYSTEM=="usb", ATTR{idVendor}=="04d8", ATTR{idProduct}=="fc18", MODE="0666", GROUP="plugdev"
+                SUBSYSTEM=="usb", ATTR{idVendor}=="04d8", ATTR{idProduct}=="fc19", MODE="0666", GROUP="plugdev"
+            dest: /etc/udev/rules.d/99-nextdraw.rules
+            owner: root
+            group: root
+            mode: "0644"
+
+      - name: Reload udev rules
+        shell: |
+            udevadm control --reload-rules
+            udevadm trigger
+
+      - name: Create configuration file if not exists
+        become: no
+        become_user: "{{ app_user }}"
+        copy:
+            content: |
+                {
+                  "plotter_info": {
+                    "model": 8,
+                    "nickname": "RaspberryPi-Plotter-{{ ansible_hostname }}",
+                    "port": null,
+                    "port_config": 0
+                  },
+                  "plotter_settings": {
+                    "speed_pendown": 25,
+                    "speed_penup": 75,
+                    "accel": 75,
+                    "pen_pos_down": 40,
+                    "pen_pos_up": 60,
+                    "pen_rate_lower": 50,
+                    "pen_rate_raise": 50,
+                    "handling": 1,
+                    "homing": true,
+                    "model": 8,
+                    "auto_rotate": true,
+                    "reordering": 0,
+                    "report_time": true
+                  },
+                  "api_settings": {
+                    "host": "0.0.0.0",
+                    "port": 5000,
+                    "debug": false,
+                    "cors_enabled": true
+                  },
+                  "version": "1.0.0",
+                  "last_updated": "{{ ansible_date_time.iso8601 }}"
+                }
+            dest: "{{ app_dir }}/config.json"
+            force: no
+
+      - name: Create systemd service file
+        copy:
+            content: |
+                [Unit]
+                Description=NextDraw Plotter API Server
+                After=network.target
+                Wants=network.target
+
+                [Service]
+                Type=simple
+                User={{ app_user }}
+                Group={{ app_group }}
+                WorkingDirectory={{ app_dir }}
+                Environment=PATH={{ venv_dir }}/bin
+                ExecStart={{ venv_dir }}/bin/python {{ app_dir }}/app.py
+                ExecReload=/bin/kill -HUP $MAINPID
+                KillMode=mixed
+                Restart=always
+                RestartSec=5
+                TimeoutStopSec=30
+
+                # Security settings
+                NoNewPrivileges=yes
+                PrivateTmp=yes
+                ProtectSystem=strict
+                ReadWritePaths={{ app_dir }}
+                ProtectHome=no
+
+                # Resource limits
+                LimitNOFILE=65536
+                MemoryMax=512M
+
+                # Logging
+                StandardOutput=journal
+                StandardError=journal
+                SyslogIdentifier={{ app_name }}
+
+                [Install]
+                WantedBy=multi-user.target
+            dest: "/etc/systemd/system/{{ service_name }}.service"
+            owner: root
+            group: root
+            mode: "0644"
+
+      - name: Create nginx configuration
+        copy:
+            content: |
+                server {
+                    listen 80;
+                    server_name _;
+
+                    # Large file upload settings
+                    client_max_body_size 1G;
+                    client_body_buffer_size 128k;
+                    client_body_timeout 300s;
+                    client_header_timeout 300s;
+
+                    # Temporary file settings for large uploads
+                    client_body_temp_path /tmp/nginx_uploads 1 2;
+
+                    # Main application proxy
+                    location / {
+                        proxy_pass http://127.0.0.1:5000;
+                        proxy_set_header Host $host;
+                        proxy_set_header X-Real-IP $remote_addr;
+                        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                        proxy_set_header X-Forwarded-Proto $scheme;
+
+                        # WebSocket support
+                        proxy_http_version 1.1;
+                        proxy_set_header Upgrade $http_upgrade;
+                        proxy_set_header Connection "upgrade";
+
+                        # Extended timeouts for large uploads and long plots
+                        proxy_connect_timeout 300s;
+                        proxy_send_timeout 300s;
+                        proxy_read_timeout 300s;
+
+                        # Buffer settings for large requests
+                        proxy_buffering off;
+                        proxy_request_buffering off;
+                        proxy_max_temp_file_size 0;
+                    }
+
+                    # Special handling for upload endpoints
+                    location ~ ^/(plot|plot/upload|plot/chunk) {
+                        proxy_pass http://127.0.0.1:5000;
+                        proxy_set_header Host $host;
+                        proxy_set_header X-Real-IP $remote_addr;
+                        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                        proxy_set_header X-Forwarded-Proto $scheme;
+
+                        # Extended settings for large file uploads
+                        client_max_body_size 1G;
+                        client_body_timeout 600s;
+                        proxy_connect_timeout 600s;
+                        proxy_send_timeout 600s;
+                        proxy_read_timeout 600s;
+
+                        # Disable buffering for uploads
+                        proxy_buffering off;
+                        proxy_request_buffering off;
+                        proxy_max_temp_file_size 0;
+
+                        # Progress tracking
+                        proxy_set_header X-Content-Length $content_length;
+                    }
+
+                    # Static file serving for uploads/downloads
+                    location /uploads/ {
+                        alias {{ app_dir }}/uploads/;
+                        expires 1h;
+                        add_header Cache-Control "public, immutable";
+                        add_header Accept-Ranges bytes;
+                        add_header X-Content-Type-Options nosniff;
+                        add_header X-Frame-Options DENY;
+                    }
+
+                    location /output/ {
+                        alias {{ app_dir }}/output/;
+                        expires 1h;
+                        add_header Cache-Control "public, immutable";
+                        add_header Accept-Ranges bytes;
+                        add_header X-Content-Type-Options nosniff;
+                        add_header X-Frame-Options DENY;
+                    }
+
+                    # Health check endpoint optimization
+                    location /health {
+                        proxy_pass http://127.0.0.1:5000;
+                        proxy_cache_valid 200 10s;
+                        proxy_connect_timeout 5s;
+                        proxy_send_timeout 5s;
+                        proxy_read_timeout 5s;
+                    }
+
+                    # Logging
+                    access_log /var/log/nginx/nextdraw_access.log combined;
+                    error_log /var/log/nginx/nextdraw_error.log warn;
+
+                    # Security headers
+                    add_header X-Frame-Options DENY always;
+                    add_header X-Content-Type-Options nosniff always;
+                    add_header X-XSS-Protection "1; mode=block" always;
+                    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+                }
+            dest: "{{ nginx_config }}"
+            owner: root
+            group: root
+            mode: "0644"
+
+      - name: Enable nginx site
+        file:
+            src: "{{ nginx_config }}"
+            dest: "{{ nginx_enabled }}"
+            state: link
+
+      - name: Remove default nginx site
+        file:
+            path: /etc/nginx/sites-enabled/default
+            state: absent
+
+      - name: Create log rotation configuration
+        copy:
+            content: |
+                {{ app_dir }}/logs/*.log {
+                    daily
+                    missingok
+                    rotate 14
+                    compress
+                    delaycompress
+                    notifempty
+                    create 0644 {{ app_user }} {{ app_group }}
+                    postrotate
+                        systemctl reload {{ service_name }} >/dev/null 2>&1 || true
+                    endscript
+                }
+            dest: "/etc/logrotate.d/{{ app_name }}"
+            owner: root
+            group: root
+            mode: "0644"
+
+      - name: Create update script
+        become: no
+        become_user: "{{ app_user }}"
+        copy:
+            content: |
+                #!/bin/bash
+                cd "{{ app_dir }}"
+                source {{ venv_dir }}/bin/activate
+                pip install -r requirements.txt
+                pip install --upgrade https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+                sudo systemctl restart {{ service_name }}
+            dest: "{{ app_dir }}/update.sh"
+            mode: "0755"
+
+      - name: Test nginx configuration
+        command: nginx -t
+        changed_when: false
+
+      - name: Reload systemd daemon
+        systemd:
+            daemon_reload: yes
+
+      - name: Enable and start services
+        systemd:
+            name: "{{ item }}"
+            enabled: yes
+            state: restarted
+        loop:
+            - "{{ service_name }}"
+            - nginx
+
+      - name: Wait for application to start
+        uri:
+            url: "http://localhost:5000/health"
+            status_code: 200
+        register: result
+        until: result.status == 200
+        retries: 30
+        delay: 2
+
+      - name: Configure firewall (if ufw is available)
+        block:
+            - name: Check if ufw is installed
+              command: which ufw
+              register: ufw_check
+              changed_when: false
+              failed_when: false
+
+            - name: Configure ufw rules
+              when: ufw_check.rc == 0
+              ufw:
+                  rule: allow
+                  port: "{{ item }}"
+                  proto: tcp
+              loop:
+                  - "22"
+                  - "80"
+                  - "443"
+                  - "5000"
+
+            - name: Enable ufw
+              when: ufw_check.rc == 0
+              ufw:
+                  state: enabled
+
+  post_tasks:
+      - name: Get service status
+        systemd:
+            name: "{{ item }}"
+        register: service_status
+        loop:
+            - "{{ service_name }}"
+            - nginx
+
+      - name: Get IP addresses
+        set_fact:
+            ip_addresses: "{{ ansible_all_ipv4_addresses | join(', ') }}"
+
+      - name: Display deployment summary
+        debug:
+            msg: |
+                ====================================
+                NextDraw API Deployment Complete
+                ====================================
+
+                Host: {{ inventory_hostname }}
+                IP Addresses: {{ ip_addresses }}
+
+                Service Status:
+                  NextDraw API: {{ service_status.results[0].status.ActiveState }}
+                  Nginx: {{ service_status.results[1].status.ActiveState }}
+
+                Access URLs:
+                  API Endpoint: http://{{ ansible_default_ipv4.address }}/
+                  Health Check: http://{{ ansible_default_ipv4.address }}/health
+                  Status: http://{{ ansible_default_ipv4.address }}/status
+
+                Application Directory: {{ app_dir }}
+                Configuration: {{ app_dir }}/config.json
+                Logs: {{ app_dir }}/logs/
+
+                Commands:
+                  Restart service: sudo systemctl restart {{ service_name }}
+                  View logs: sudo journalctl -u {{ service_name }} -f
+                  Update app: {{ app_dir }}/update.sh
+
+  handlers:
+      - name: restart nginx
+        systemd:
+            name: nginx
+            state: restarted
+
+      - name: restart app
+        systemd:
+            name: "{{ service_name }}"
+            state: restarted

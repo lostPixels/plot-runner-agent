@@ -1,0 +1,133 @@
+# Example host variables for NextDraw Plotter API deployment
+# Copy this file to host_vars/<hostname>.yml and customize as needed
+# For example: host_vars/nextdraw1.local.yml
+
+# User and group configuration
+app_user: james
+app_group: james
+
+# Application paths
+app_dir: /home/james/plot-runner-agent
+venv_dir: "{{ app_dir }}/venv"
+
+# Service configuration
+service_name: nextdraw-api
+service_restart_on_failure: yes
+service_restart_delay: 5
+service_memory_limit: 512M
+
+# Network configuration
+api_host: "0.0.0.0"
+api_port: 5000
+nginx_port: 80
+
+# Plotter-specific configuration
+# These will be merged into config.json
+plotter_config:
+  plotter_info:
+    model: 8  # 8 for NextDraw, adjust for your plotter model
+    nickname: "{{ inventory_hostname }}-plotter"
+    port: null  # Auto-detect USB port
+    port_config: 0
+  plotter_settings:
+    speed_pendown: 25  # Pen down speed (1-100)
+    speed_penup: 75    # Pen up speed (1-100)
+    accel: 75          # Acceleration (1-100)
+    pen_pos_down: 40   # Pen down position
+    pen_pos_up: 60     # Pen up position
+    pen_rate_lower: 50 # Pen lowering rate
+    pen_rate_raise: 50 # Pen raising rate
+    handling: 1        # 0=legacy, 1=standard, 2=strict
+    homing: true       # Enable homing on start
+    model: 8           # Plotter model
+    auto_rotate: true  # Auto-rotate to fit paper
+    reordering: 0      # Path optimization level
+    report_time: true  # Report plotting time
+  api_settings:
+    host: "{{ api_host }}"
+    port: "{{ api_port }}"
+    debug: false
+    cors_enabled: true
+
+# Upload and file size limits
+nginx_client_max_body_size: "1G"
+nginx_upload_timeout: 600
+
+# USB device permissions
+# Add custom USB vendor/product IDs if needed
+usb_permissions:
+  - vendor: "04d8"
+    product: "fd92"
+  - vendor: "04d8"
+    product: "fc18"
+  - vendor: "04d8"
+    product: "fc19"
+
+# Log rotation settings
+log_rotation:
+  frequency: daily
+  rotate: 14
+  compress: true
+
+# Frontend build settings (if applicable)
+# Set to false to skip frontend build for this host
+build_frontend: true
+
+# Custom environment variables
+custom_env_vars:
+  # PLOTTER_DEBUG: "1"
+  # CUSTOM_VAR: "value"
+
+# Firewall settings
+firewall_enabled: true
+firewall_allowed_ports:
+  - 22   # SSH
+  - 80   # HTTP
+  - 443  # HTTPS (if using SSL)
+  - 5000 # API (if exposing directly)
+
+# Update behavior
+auto_update_enabled: false
+update_schedule: "0 2 * * *"  # Cron format (2 AM daily)
+
+# Monitoring and alerts (optional)
+monitoring:
+  enabled: false
+  health_check_interval: 300  # seconds
+  alert_email: ""
+
+# Backup configuration (optional)
+backup:
+  enabled: false
+  destination: "/backup/{{ inventory_hostname }}"
+  schedule: "0 3 * * 0"  # Weekly at 3 AM Sunday
+
+# Custom nginx configuration snippets
+nginx_custom_config: |
+  # Add any custom nginx configuration here
+  # For example, SSL configuration:
+  # listen 443 ssl;
+  # ssl_certificate /etc/ssl/certs/cert.pem;
+  # ssl_certificate_key /etc/ssl/private/key.pem;
+
+# Performance tuning
+performance:
+  worker_processes: auto
+  worker_connections: 1024
+  keepalive_timeout: 65
+
+# Development/testing options
+development_mode: false
+enable_debug_endpoints: false
+
+# Hardware-specific settings
+# For Raspberry Pi models with different capabilities
+raspberry_pi_model: "4"  # 3, 3+, 4, etc.
+gpio_enabled: false
+i2c_enabled: false
+spi_enabled: false
+
+# Notes for this specific host
+notes: |
+  This is an example configuration file.
+  Add any host-specific notes or documentation here.

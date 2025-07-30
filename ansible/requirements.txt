@@ -1,0 +1,20 @@
+# Ansible control machine requirements
+# Install with: pip install -r requirements.txt
+
+# Core Ansible
+ansible>=2.9.0
+
+# SSH connectivity
+paramiko>=2.8.0
+
+# Additional useful packages for automation
+requests>=2.20.0
+jinja2>=2.11.0
+PyYAML>=5.3.0
+cryptography>=3.0
+
+# For handling JSON and configuration files
+jsonschema>=3.2.0
+
+# For better output formatting
+rich>=10.0.0

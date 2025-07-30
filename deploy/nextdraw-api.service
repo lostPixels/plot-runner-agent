@@ -26,7 +26,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ReadWritePaths=%HOME%/plot-runner-agent
-ProtectHome=yes
+ProtectHome=no
 
 # Resource limits
 LimitNOFILE=65536

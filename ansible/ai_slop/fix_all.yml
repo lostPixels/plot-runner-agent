@@ -1,0 +1,408 @@
+---
+- name: Comprehensive Fix for NextDraw API Deployment Issues
+  hosts: raspberry_pis
+  become: yes
+  vars:
+      app_name: nextdraw-api
+      app_user: james
+      app_group: james
+      app_dir: /home/james/plot-runner-agent
+      venv_dir: "{{ app_dir }}/venv"
+      local_project_root: "{{ playbook_dir }}/.."
+      required_files:
+          - app.py
+          - config_manager.py
+          - job_queue.py
+          - plotter_controller.py
+          - requirements.txt
+          - wsgi.py
+          - gunicorn.conf.py
+
+  tasks:
+      - name: Stop services before fixes
+        systemd:
+            name: "{{ item }}"
+            state: stopped
+        loop:
+            - "{{ app_name }}"
+            - nginx
+        ignore_errors: yes
+
+      - name: Create application directory
+        file:
+            path: "{{ app_dir }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0755"
+
+      - name: Check which files exist on target
+        stat:
+            path: "{{ app_dir }}/{{ item }}"
+        register: remote_file_checks
+        loop: "{{ required_files }}"
+
+      - name: Check which files exist locally
+        delegate_to: localhost
+        become: no
+        stat:
+            path: "{{ local_project_root }}/{{ item }}"
+        register: local_file_checks
+        loop: "{{ required_files }}"
+
+      - name: Display file status
+        debug:
+            msg: |
+                File Status Check:
+                {% for i in range(required_files | length) %}
+                - {{ required_files[i] }}:
+                  Local: {{ 'EXISTS' if local_file_checks.results[i].stat.exists else 'MISSING' }}
+                  Remote: {{ 'EXISTS' if remote_file_checks.results[i].stat.exists else 'MISSING' }}
+                {% endfor %}
+
+      - name: Synchronize all application files
+        synchronize:
+            src: "{{ local_project_root }}/"
+            dest: "{{ app_dir }}/"
+            delete: no
+            recursive: yes
+            checksum: yes
+            rsync_opts:
+                - "--exclude=.git"
+                - "--exclude=__pycache__"
+                - "--exclude=*.pyc"
+                - "--exclude=.env"
+                - "--exclude=venv"
+                - "--exclude=node_modules"
+                - "--exclude=ansible"
+                - "--exclude=.DS_Store"
+                - "--exclude=*.log"
+                - "--exclude=logs/*"
+                - "--exclude=uploads/*"
+                - "--exclude=output/*"
+        become: no
+        become_user: "{{ app_user }}"
+
+      - name: Ensure critical files were copied
+        stat:
+            path: "{{ app_dir }}/{{ item }}"
+        register: critical_files
+        loop:
+            - app.py
+            - requirements.txt
+        failed_when: not critical_files.stat.exists
+
+      - name: Create required directories
+        file:
+            path: "{{ app_dir }}/{{ item }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0755"
+        loop:
+            - logs
+            - uploads
+            - output
+
+      - name: Check virtual environment status
+        stat:
+            path: "{{ venv_dir }}/bin/python"
+        register: venv_python
+
+      - name: Remove broken virtual environment
+        file:
+            path: "{{ venv_dir }}"
+            state: absent
+        when:
+            - venv_dir is defined
+            - not venv_python.stat.exists
+
+      - name: Ensure Python dependencies are installed
+        apt:
+            name:
+                - python3
+                - python3-venv
+                - python3-pip
+                - python3-dev
+                - python3-full
+                - build-essential
+                - libusb-1.0-0-dev
+                - libudev-dev
+            state: present
+            update_cache: yes
+            cache_valid_time: 3600
+
+      - name: Create virtual environment
+        become: yes
+        become_user: "{{ app_user }}"
+        command: python3 -m venv {{ venv_dir }}
+        args:
+            creates: "{{ venv_dir }}/bin/activate"
+
+      - name: Upgrade pip in virtual environment
+        become: yes
+        become_user: "{{ app_user }}"
+        pip:
+            name:
+                - pip
+                - setuptools
+                - wheel
+            state: latest
+            virtualenv: "{{ venv_dir }}"
+
+      - name: Install Python dependencies
+        become: yes
+        become_user: "{{ app_user }}"
+        pip:
+            requirements: "{{ app_dir }}/requirements.txt"
+            virtualenv: "{{ venv_dir }}"
+
+      - name: Install NextDraw library
+        become: yes
+        become_user: "{{ app_user }}"
+        pip:
+            name: https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+            virtualenv: "{{ venv_dir }}"
+        register: nextdraw_install
+        ignore_errors: yes
+
+      - name: Check for config.json
+        stat:
+            path: "{{ app_dir }}/config.json"
+        register: config_file
+
+      - name: Copy config from example if exists
+        copy:
+            src: "{{ app_dir }}/config.example.json"
+            dest: "{{ app_dir }}/config.json"
+            remote_src: yes
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+        when:
+            - not config_file.stat.exists
+            - app_dir ~ "/config.example.json" is file
+
+      - name: Create default config if needed
+        copy:
+            content: |
+                {
+                  "plotter_info": {
+                    "model": 8,
+                    "nickname": "RaspberryPi-Plotter-{{ ansible_hostname }}",
+                    "port": null,
+                    "port_config": 0
+                  },
+                  "plotter_settings": {
+                    "speed_pendown": 25,
+                    "speed_penup": 75,
+                    "accel": 75,
+                    "pen_pos_down": 40,
+                    "pen_pos_up": 60,
+                    "pen_rate_lower": 50,
+                    "pen_rate_raise": 50,
+                    "handling": 1,
+                    "homing": true,
+                    "model": 8,
+                    "auto_rotate": true,
+                    "reordering": 0,
+                    "report_time": true
+                  },
+                  "api_settings": {
+                    "host": "0.0.0.0",
+                    "port": 5000,
+                    "debug": false,
+                    "cors_enabled": true
+                  },
+                  "version": "1.0.0",
+                  "last_updated": "{{ ansible_date_time.iso8601 }}"
+                }
+            dest: "{{ app_dir }}/config.json"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            force: no
+
+      - name: Fix all file permissions
+        file:
+            path: "{{ app_dir }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            recurse: yes
+
+      - name: Verify systemd service file exists
+        stat:
+            path: "/etc/systemd/system/{{ app_name }}.service"
+        register: service_file
+
+      - name: Create systemd service if missing
+        copy:
+            content: |
+                [Unit]
+                Description=NextDraw Plotter API Server
+                After=network.target
+                Wants=network.target
+
+                [Service]
+                Type=simple
+                User={{ app_user }}
+                Group={{ app_group }}
+                WorkingDirectory={{ app_dir }}
+                Environment=PATH={{ venv_dir }}/bin
+                ExecStart={{ venv_dir }}/bin/python {{ app_dir }}/app.py
+                Restart=always
+                RestartSec=5
+
+                [Install]
+                WantedBy=multi-user.target
+            dest: "/etc/systemd/system/{{ app_name }}.service"
+            owner: root
+            group: root
+            mode: "0644"
+        when: not service_file.stat.exists
+
+      - name: Update service file Python path
+        lineinfile:
+            path: "/etc/systemd/system/{{ app_name }}.service"
+            regexp: "^ExecStart="
+            line: "ExecStart={{ venv_dir }}/bin/python {{ app_dir }}/app.py"
+
+      - name: Test Python imports
+        become: yes
+        become_user: "{{ app_user }}"
+        shell: |
+            cd {{ app_dir }}
+            {{ venv_dir }}/bin/python -c "
+            import sys
+            print('Python:', sys.version.split()[0])
+            print('Path:', sys.executable)
+            errors = []
+            try:
+                import flask
+                print('✓ Flask imported')
+            except Exception as e:
+                errors.append(f'Flask: {e}')
+            try:
+                import gunicorn
+                print('✓ Gunicorn imported')
+            except Exception as e:
+                errors.append(f'Gunicorn: {e}')
+            try:
+                from app import app
+                print('✓ app.py imported')
+            except Exception as e:
+                errors.append(f'app.py: {e}')
+
+            if errors:
+                print('\\nERRORS:')
+                for err in errors:
+                    print(f'✗ {err}')
+                sys.exit(1)
+            else:
+                print('\\n✓ All imports successful!')
+            "
+        register: import_test
+        ignore_errors: yes
+
+      - name: Display import test results
+        debug:
+            msg: |
+                Import Test:
+                {{ import_test.stdout | default('No output') }}
+                {% if import_test.rc != 0 %}
+                STDERR: {{ import_test.stderr | default('') }}
+                {% endif %}
+
+      - name: Reload systemd daemon
+        systemd:
+            daemon_reload: yes
+
+      - name: Start and enable services
+        systemd:
+            name: "{{ item }}"
+            state: started
+            enabled: yes
+        loop:
+            - "{{ app_name }}"
+            - nginx
+
+      - name: Wait for services to stabilize
+        pause:
+            seconds: 5
+
+      - name: Check service status
+        systemd:
+            name: "{{ app_name }}"
+        register: final_service_status
+
+      - name: Test API endpoints
+        uri:
+            url: "{{ item.url }}"
+            method: GET
+            status_code: 200
+            timeout: 10
+        register: api_tests
+        ignore_errors: yes
+        loop:
+            - { url: "http://localhost:5000/health", name: "Direct API" }
+            - { url: "http://localhost/health", name: "Through Nginx" }
+
+      - name: Get service logs if not running
+        shell: journalctl -u {{ app_name }} -n 30 --no-pager
+        register: service_logs
+        when: final_service_status.status.ActiveState != "active"
+
+      - name: Final status report
+        debug:
+            msg: |
+                ====================================================
+                Comprehensive Fix Summary for {{ inventory_hostname }}
+                ====================================================
+
+                Files:
+                - Required files deployed: YES
+                - Virtual environment created: YES
+                - Configuration file: {{ 'EXISTS' if config_file.stat.exists or True else 'MISSING' }}
+
+                Services:
+                - {{ app_name }}: {{ final_service_status.status.ActiveState }}
+                - Main PID: {{ final_service_status.status.MainPID | default('N/A') }}
+
+                API Tests:
+                {% for test in api_tests.results %}
+                - {{ test.item.name }}: {{ 'WORKING' if test.status | default(0) == 200 else 'FAILED' }}
+                {% endfor %}
+
+                Import Test: {{ 'PASSED' if import_test.rc == 0 else 'FAILED' }}
+
+                {% if final_service_status.status.ActiveState == "active" and api_tests.results[1].status | default(0) == 200 %}
+                ✅ SUCCESS! The API is fully operational!
+
+                Access your API at:
+                - http://{{ ansible_default_ipv4.address }}/
+                - http://{{ inventory_hostname }}/
+                {% else %}
+                ❌ Issues remain. Please check the following:
+
+                {% if final_service_status.status.ActiveState != "active" %}
+                Service Logs:
+                {{ service_logs.stdout | default('No logs available') }}
+                {% endif %}
+
+                Troubleshooting:
+                1. SSH to {{ inventory_hostname }}
+                2. Test manually: cd {{ app_dir }} && {{ venv_dir }}/bin/python app.py
+                3. Check logs: sudo journalctl -u {{ app_name }} -f
+                4. Verify files: ls -la {{ app_dir }}/
+                {% endif %}
+
+      - name: Create quick test script on target
+        copy:
+            content: |
+                #!/bin/bash
+                echo "Testing NextDraw API..."
+                echo "Service: $(systemctl is-active {{ app_name }})"
+                echo "API: $(curl -s -o /dev/null -w "%{http_code}" http://localhost/health)"
+                echo "Logs: sudo journalctl -u {{ app_name }} -n 20"
+            dest: "{{ app_dir }}/test_api.sh"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0755"

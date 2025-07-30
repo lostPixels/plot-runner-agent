@@ -1,0 +1,260 @@
+---
+- name: Fix NextDraw API Systemd Service Configuration
+  hosts: raspberry_pis
+  become: yes
+  vars:
+    app_name: nextdraw-api
+    app_user: james
+    app_group: james
+    app_dir: /home/james/plot-runner-agent
+    venv_dir: "{{ app_dir }}/venv"
+    service_file: "/etc/systemd/system/{{ app_name }}.service"
+
+  tasks:
+    - name: Stop the service first
+      systemd:
+        name: "{{ app_name }}"
+        state: stopped
+      ignore_errors: yes
+
+    - name: Check if virtual environment exists
+      stat:
+        path: "{{ venv_dir }}/bin/python"
+      register: venv_check
+
+    - name: Display current status
+      debug:
+        msg: |
+          Service Configuration Check:
+          - Virtual environment: {{ 'EXISTS' if venv_check.stat.exists else 'MISSING' }}
+          - Service file: {{ service_file }}
+          - App directory: {{ app_dir }}
+
+    - name: Create corrected systemd service file
+      copy:
+        content: |
+          [Unit]
+          Description=NextDraw Plotter API Server
+          After=network.target
+          Wants=network.target
+
+          [Service]
+          Type=simple
+          User={{ app_user }}
+          Group={{ app_group }}
+          WorkingDirectory={{ app_dir }}
+          Environment="PATH={{ venv_dir }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          Environment="PYTHONPATH={{ app_dir }}"
+          ExecStart={{ venv_dir }}/bin/python {{ app_dir }}/app.py
+          ExecReload=/bin/kill -HUP $MAINPID
+          KillMode=mixed
+          Restart=always
+          RestartSec=5
+          TimeoutStopSec=30
+
+          # Security settings - Modified to allow home directory access
+          NoNewPrivileges=yes
+          PrivateTmp=yes
+          # ProtectSystem=strict removed - was causing issues
+          # ProtectHome=yes removed - was blocking access to /home/james
+
+          # Instead, use more permissive settings
+          ProtectSystem=full
+          ReadWritePaths={{ app_dir }}
+
+          # Additional security that doesn't break functionality
+          ProtectKernelTunables=yes
+          ProtectControlGroups=yes
+          RestrictRealtime=yes
+          RestrictSUIDSGID=yes
+
+          # Resource limits
+          LimitNOFILE=65536
+          MemoryMax=512M
+
+          # Logging
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier={{ app_name }}
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: "{{ service_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+        backup: yes
+
+    - name: Create alternative service file (minimal security)
+      copy:
+        content: |
+          [Unit]
+          Description=NextDraw Plotter API Server
+          After=network.target
+          Wants=network.target
+
+          [Service]
+          Type=simple
+          User={{ app_user }}
+          Group={{ app_group }}
+          WorkingDirectory={{ app_dir }}
+          Environment="PATH={{ venv_dir }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          ExecStart={{ venv_dir }}/bin/python {{ app_dir }}/app.py
+          Restart=always
+          RestartSec=5
+
+          # Minimal security settings for testing
+          PrivateTmp=yes
+          LimitNOFILE=65536
+
+          # Logging
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier={{ app_name }}
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: "{{ service_file }}.minimal"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Test if Python executable works with full path
+      command: "{{ venv_dir }}/bin/python --version"
+      become: yes
+      become_user: "{{ app_user }}"
+      register: python_test
+      changed_when: false
+
+    - name: Display Python test result
+      debug:
+        msg: |
+          Python executable test:
+          - Command: {{ venv_dir }}/bin/python --version
+          - Output: {{ python_test.stdout }}
+          - Return code: {{ python_test.rc }}
+
+    - name: Test if app.py can be imported
+      shell: |
+        cd {{ app_dir }}
+        {{ venv_dir }}/bin/python -c "import app; print('App module imported successfully')"
+      become: yes
+      become_user: "{{ app_user }}"
+      register: app_test
+      ignore_errors: yes
+
+    - name: Display app import test
+      debug:
+        msg: |
+          App import test:
+          - Success: {{ app_test.rc == 0 }}
+          - Output: {{ app_test.stdout | default('') }}
+          - Error: {{ app_test.stderr | default('') }}
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Start the service
+      systemd:
+        name: "{{ app_name }}"
+        state: started
+        enabled: yes
+
+    - name: Wait for service to stabilize
+      pause:
+        seconds: 3
+
+    - name: Check service status
+      systemd:
+        name: "{{ app_name }}"
+      register: service_status
+
+    - name: Get service logs
+      shell: journalctl -u {{ app_name }} -n 20 --no-pager
+      register: service_logs
+      changed_when: false
+
+    - name: Test API endpoint
+      uri:
+        url: "http://localhost:5000/health"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: api_test
+      ignore_errors: yes
+
+    - name: Final status report
+      debug:
+        msg: |
+          ========================================
+          Service Fix Summary for {{ inventory_hostname }}
+          ========================================
+
+          Python Test: {{ 'PASSED' if python_test.rc == 0 else 'FAILED' }}
+          App Import: {{ 'PASSED' if app_test.rc == 0 else 'FAILED' }}
+
+          Service Status:
+          - State: {{ service_status.status.ActiveState }}
+          - Sub State: {{ service_status.status.SubState }}
+          - Main PID: {{ service_status.status.MainPID | default('N/A') }}
+          - Exit Code: {{ service_status.status.ExecMainStatus | default('N/A') }}
+
+          API Test: {{ 'WORKING' if api_test.status | default(0) == 200 else 'NOT WORKING' }}
+
+          {% if service_status.status.ActiveState != "active" %}
+          Service Logs:
+          {{ service_logs.stdout }}
+          {% endif %}
+
+          {% if service_status.status.ActiveState == "active" and api_test.status | default(0) == 200 %}
+          ✅ SUCCESS! Service is running properly!
+          {% else %}
+          ❌ Service still has issues.
+
+          Try the minimal security service:
+          1. SSH to {{ inventory_hostname }}
+          2. Run: sudo cp {{ service_file }}.minimal {{ service_file }}
+          3. Run: sudo systemctl daemon-reload
+          4. Run: sudo systemctl restart {{ app_name }}
+
+          Or test manually:
+          1. sudo -u {{ app_user }} {{ venv_dir }}/bin/python {{ app_dir }}/app.py
+          {% endif %}
+
+    - name: Create diagnostic script
+      copy:
+        content: |
+          #!/bin/bash
+          echo "NextDraw API Service Diagnostics"
+          echo "================================"
+          echo
+          echo "1. Testing Python executable directly:"
+          sudo -u {{ app_user }} {{ venv_dir }}/bin/python --version
+          echo
+          echo "2. Testing app import:"
+          cd {{ app_dir }}
+          sudo -u {{ app_user }} {{ venv_dir }}/bin/python -c "import app; print('✓ App imported')"
+          echo
+          echo "3. Testing with systemd environment:"
+          sudo -u {{ app_user }} env PATH={{ venv_dir }}/bin:$PATH {{ venv_dir }}/bin/python {{ app_dir }}/app.py &
+          PID=$!
+          sleep 2
+          if kill -0 $PID 2>/dev/null; then
+              echo "✓ App started successfully"
+              kill $PID
+          else
+              echo "✗ App failed to start"
+          fi
+          echo
+          echo "4. Current service status:"
+          systemctl status {{ app_name }} --no-pager
+          echo
+          echo "5. To use minimal security service:"
+          echo "   sudo cp {{ service_file }}.minimal {{ service_file }}"
+          echo "   sudo systemctl daemon-reload"
+          echo "   sudo systemctl restart {{ app_name }}"
+        dest: "{{ app_dir }}/diagnose_service.sh"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"

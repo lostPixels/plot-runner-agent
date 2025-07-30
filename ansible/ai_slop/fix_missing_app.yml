@@ -1,0 +1,299 @@
+---
+- name: Emergency Fix for Missing Application Files
+  hosts: raspberry_pis
+  become: yes
+  vars:
+      app_name: nextdraw-api
+      app_user: james
+      app_group: james
+      app_dir: /home/james/plot-runner-agent
+      venv_dir: "{{ app_dir }}/venv"
+      local_project_root: "{{ playbook_dir }}/.."
+      required_files:
+          - app.py
+          - config_manager.py
+          - job_queue.py
+          - plotter_controller.py
+          - requirements.txt
+          - wsgi.py
+
+  tasks:
+      - name: Check what files exist in deployment directory
+        stat:
+            path: "{{ app_dir }}/{{ item }}"
+        register: file_checks
+        loop: "{{ required_files }}"
+
+      - name: Display file check results
+        debug:
+            msg: |
+                File Status Check:
+                {% for result in file_checks.results %}
+                - {{ result.item }}: {{ 'EXISTS' if result.stat.exists else 'MISSING' }}
+                {% endfor %}
+
+      - name: List all files in app directory
+        find:
+            paths: "{{ app_dir }}"
+            file_type: file
+            recurse: no
+        register: existing_files
+
+      - name: Show existing files
+        debug:
+            msg: |
+                Files found in {{ app_dir }}:
+                {% for file in existing_files.files %}
+                - {{ file.path | basename }}
+                {% endfor %}
+                Total files: {{ existing_files.files | length }}
+
+      - name: Check if app directory is empty or nearly empty
+        set_fact:
+            app_dir_empty: "{{ existing_files.files | length < 5 }}"
+
+      - name: Verify local source files exist
+        delegate_to: localhost
+        become: no
+        stat:
+            path: "{{ local_project_root }}/{{ item }}"
+        register: local_file_checks
+        loop: "{{ required_files }}"
+
+      - name: Display local file status
+        debug:
+            msg: |
+                Local Source Files:
+                {% for result in local_file_checks.results %}
+                - {{ result.item }}: {{ 'EXISTS' if result.stat.exists else 'MISSING' }}
+                {% endfor %}
+
+      - name: Stop service before file operations
+        systemd:
+            name: "{{ app_name }}"
+            state: stopped
+
+      - name: Create app directory if missing
+        file:
+            path: "{{ app_dir }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0755"
+
+      - name: Emergency file copy - Copy individual critical files
+        copy:
+            src: "{{ local_project_root }}/{{ item }}"
+            dest: "{{ app_dir }}/{{ item }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0644"
+        loop: "{{ required_files }}"
+        when: local_file_checks.results[item_index].stat.exists
+        loop_control:
+            index_var: item_index
+
+      - name: Full resynchronization if many files are missing
+        when: app_dir_empty | bool
+        block:
+            - name: Clean app directory (backup first)
+              shell: |
+                  if [ -d {{ app_dir }} ]; then
+                    mv {{ app_dir }} {{ app_dir }}.backup.$(date +%Y%m%d_%H%M%S)
+                  fi
+                  mkdir -p {{ app_dir }}
+
+            - name: Full synchronize application files
+              synchronize:
+                  src: "{{ local_project_root }}/"
+                  dest: "{{ app_dir }}"
+                  delete: no
+                  recursive: yes
+                  rsync_opts:
+                      - "--exclude=.git"
+                      - "--exclude=__pycache__"
+                      - "--exclude=*.pyc"
+                      - "--exclude=.env"
+                      - "--exclude=venv"
+                      - "--exclude=node_modules"
+                      - "--exclude=ansible"
+                      - "--exclude=.DS_Store"
+                      - "--exclude=*.log"
+              become: no
+              become_user: "{{ app_user }}"
+
+      - name: Ensure correct ownership of all files
+        file:
+            path: "{{ app_dir }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            recurse: yes
+
+      - name: Check if virtual environment exists
+        stat:
+            path: "{{ venv_dir }}/bin/python"
+        register: venv_check
+
+      - name: Recreate virtual environment if missing
+        when: not venv_check.stat.exists
+        block:
+            - name: Create virtual environment
+              become: no
+              become_user: "{{ app_user }}"
+              command: python3 -m venv {{ venv_dir }}
+
+            - name: Install Python dependencies
+              become: no
+              become_user: "{{ app_user }}"
+              pip:
+                  requirements: "{{ app_dir }}/requirements.txt"
+                  virtualenv: "{{ venv_dir }}"
+
+      - name: Verify app.py can be imported
+        become: no
+        become_user: "{{ app_user }}"
+        shell: |
+            cd {{ app_dir }}
+            {{ venv_dir }}/bin/python -c "import app; print('✓ app.py successfully imported')"
+        register: import_test
+        ignore_errors: yes
+
+      - name: Display import test result
+        debug:
+            msg: |
+                Import Test Result:
+                {{ import_test.stdout | default('') }}
+                {{ import_test.stderr | default('') }}
+
+      - name: Create required directories
+        file:
+            path: "{{ app_dir }}/{{ item }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: "0755"
+        loop:
+            - logs
+            - uploads
+            - output
+
+      - name: Ensure config.json exists
+        stat:
+            path: "{{ app_dir }}/config.json"
+        register: config_check
+
+      - name: Copy config.json from example if missing
+        when: not config_check.stat.exists
+        block:
+            - name: Check for config.example.json
+              stat:
+                  path: "{{ app_dir }}/config.example.json"
+              register: config_example
+
+            - name: Copy from example
+              when: config_example.stat.exists
+              copy:
+                  src: "{{ app_dir }}/config.example.json"
+                  dest: "{{ app_dir }}/config.json"
+                  remote_src: yes
+                  owner: "{{ app_user }}"
+                  group: "{{ app_group }}"
+
+            - name: Create default config if no example
+              when: not config_example.stat.exists
+              copy:
+                  content: |
+                      {
+                        "plotter_info": {
+                          "model": 8,
+                          "nickname": "RaspberryPi-Plotter-{{ ansible_hostname }}",
+                          "port": null,
+                          "port_config": 0
+                        },
+                        "plotter_settings": {
+                          "speed_pendown": 25,
+                          "speed_penup": 75,
+                          "accel": 75,
+                          "pen_pos_down": 40,
+                          "pen_pos_up": 60,
+                          "pen_rate_lower": 50,
+                          "pen_rate_raise": 50,
+                          "handling": 1,
+                          "homing": true,
+                          "model": 8,
+                          "auto_rotate": true,
+                          "reordering": 0,
+                          "report_time": true
+                        },
+                        "api_settings": {
+                          "host": "0.0.0.0",
+                          "port": 5000,
+                          "debug": false,
+                          "cors_enabled": true
+                        },
+                        "version": "1.0.0",
+                        "last_updated": "{{ ansible_date_time.iso8601 }}"
+                      }
+                  dest: "{{ app_dir }}/config.json"
+                  owner: "{{ app_user }}"
+                  group: "{{ app_group }}"
+
+      - name: Restart services
+        systemd:
+            name: "{{ item }}"
+            state: restarted
+            daemon_reload: yes
+        loop:
+            - "{{ app_name }}"
+            - nginx
+
+      - name: Wait for service to start
+        pause:
+            seconds: 5
+
+      - name: Final verification
+        uri:
+            url: "http://localhost/health"
+            method: GET
+            status_code: 200
+            timeout: 10
+        register: final_check
+        ignore_errors: yes
+
+      - name: Summary report
+        debug:
+            msg: |
+                ========================================
+                Emergency Fix Summary for {{ inventory_hostname }}
+                ========================================
+
+                Files Status:
+                - Initially missing: {{ file_checks.results | selectattr('stat.exists', 'equalto', False) | list | length }} files
+                - Full resync performed: {{ 'YES' if app_dir_empty else 'NO' }}
+
+                Current Status:
+                - App import test: {{ 'PASSED' if import_test.rc == 0 else 'FAILED' }}
+                - API health check: {{ 'WORKING' if final_check.status | default(0) == 200 else 'NOT WORKING' }}
+
+                {% if final_check.status | default(0) == 200 %}
+                ✓ SUCCESS: Application is now running at http://{{ ansible_default_ipv4.address }}/
+                {% else %}
+                ✗ Application still not responding. Manual intervention may be required.
+
+                Next steps:
+                1. SSH to {{ inventory_hostname }}
+                2. Check: ls -la {{ app_dir }}/
+                3. View logs: sudo journalctl -u {{ app_name }} -f
+                {% endif %}
+
+      - name: Show service logs if still failing
+        when: final_check.status | default(0) != 200
+        shell: journalctl -u {{ app_name }} -n 30 --no-pager
+        register: service_logs
+
+      - name: Display service logs
+        when: final_check.status | default(0) != 200
+        debug:
+            msg: |
+                Recent service logs:
+                {{ service_logs.stdout }}

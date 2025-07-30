@@ -1,0 +1,120 @@
+---
+- name: Test Ansible Path Configuration
+  hosts: localhost
+  gather_facts: no
+  vars:
+    local_project_root: "{{ playbook_dir }}/.."
+    required_files:
+      - app.py
+      - config_manager.py
+      - job_queue.py
+      - plotter_controller.py
+      - requirements.txt
+      - wsgi.py
+      - gunicorn.conf.py
+      - config.json
+      - config.example.json
+
+  tasks:
+    - name: Display current paths
+      debug:
+        msg: |
+          Ansible Paths:
+          - Playbook directory: {{ playbook_dir }}
+          - Project root (calculated): {{ local_project_root }}
+          - Frontend directory: {{ local_project_root }}/frontend
+
+    - name: List files in playbook directory
+      find:
+        paths: "{{ playbook_dir }}"
+        file_type: file
+        recurse: no
+      register: ansible_files
+
+    - name: Show Ansible directory contents
+      debug:
+        msg: |
+          Files in Ansible directory ({{ playbook_dir }}):
+          {% for file in ansible_files.files %}
+          - {{ file.path | basename }}
+          {% endfor %}
+
+    - name: Check if project root exists
+      stat:
+        path: "{{ local_project_root }}"
+      register: project_root_check
+
+    - name: List Python files in project root
+      find:
+        paths: "{{ local_project_root }}"
+        patterns: "*.py"
+        file_type: file
+        recurse: no
+      register: python_files
+      when: project_root_check.stat.exists
+
+    - name: Show Python files found
+      debug:
+        msg: |
+          Python files in project root ({{ local_project_root }}):
+          {% for file in python_files.files %}
+          - {{ file.path | basename }}
+          {% endfor %}
+          Total: {{ python_files.files | length }} files
+
+    - name: Check each required file
+      stat:
+        path: "{{ local_project_root }}/{{ item }}"
+      register: file_checks
+      loop: "{{ required_files }}"
+
+    - name: Display file check results
+      debug:
+        msg: |
+          Required Files Status:
+          {% for result in file_checks.results %}
+          - {{ result.item }}: {{ 'EXISTS' if result.stat.exists else 'MISSING' }}
+          {% endfor %}
+
+    - name: Test rsync command that will be used
+      debug:
+        msg: |
+          Deployment will use rsync with:
+          - Source: {{ local_project_root }}/
+          - Excludes: .git, __pycache__, *.pyc, .env, venv, node_modules, ansible, .DS_Store, *.log
+
+    - name: Show what would be deployed
+      shell: |
+        cd {{ local_project_root }}
+        find . -maxdepth 1 -type f -name "*.py" -o -name "*.json" -o -name "*.txt" -o -name "*.sh" | grep -v -E "(venv|ansible|\.git)" | sort
+      register: files_to_deploy
+      changed_when: false
+
+    - name: Display files that will be deployed
+      debug:
+        msg: |
+          Files that will be deployed:
+          {{ files_to_deploy.stdout }}
+
+    - name: Final summary
+      vars:
+        missing_files: "{{ file_checks.results | selectattr('stat.exists', 'equalto', False) | map(attribute='item') | list }}"
+        existing_files: "{{ file_checks.results | selectattr('stat.exists', 'equalto', True) | map(attribute='item') | list }}"
+      debug:
+        msg: |
+          ========================================
+          Path Configuration Summary
+          ========================================
+
+          Ansible is running from: {{ playbook_dir }}
+          Project root is: {{ local_project_root }}
+
+          Required files found: {{ existing_files | length }}/{{ required_files | length }}
+          Missing files: {{ missing_files | join(', ') if missing_files else 'None' }}
+
+          {% if missing_files | length > 0 %}
+          WARNING: Some required files are missing!
+          Please ensure all files are in the correct location before deployment.
+          {% else %}
+          SUCCESS: All required files found. Ready for deployment!
+          {% endif %}

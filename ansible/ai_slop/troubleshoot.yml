@@ -1,0 +1,312 @@
+---
+- name: Troubleshoot NextDraw API 502 Bad Gateway Errors
+  hosts: raspberry_pis
+  become: yes
+  vars:
+    app_name: nextdraw-api
+    app_user: james
+    app_dir: /home/james/plot-runner-agent
+    venv_dir: "{{ app_dir }}/venv"
+    api_port: 5000
+
+  tasks:
+    - name: Gather initial diagnostic information
+      block:
+        - name: Check if services are running
+          systemd:
+            name: "{{ item }}"
+          register: service_status
+          loop:
+            - "{{ app_name }}"
+            - nginx
+
+        - name: Display service status
+          debug:
+            msg: |
+              {{ item.item }} status:
+                State: {{ item.status.ActiveState }}
+                SubState: {{ item.status.SubState }}
+                ExecMainPID: {{ item.status.ExecMainPID | default('N/A') }}
+          loop: "{{ service_status.results }}"
+
+    - name: Check if Flask app is listening on port
+      shell: |
+        netstat -tlnp | grep -q ":{{ api_port }}" && echo "LISTENING" || echo "NOT_LISTENING"
+      register: port_check
+      changed_when: false
+
+    - name: Display port status
+      debug:
+        msg: "Port {{ api_port }} status: {{ port_check.stdout }}"
+
+    - name: Get recent service logs
+      shell: |
+        journalctl -u {{ app_name }} -n 50 --no-pager
+      register: service_logs
+      changed_when: false
+
+    - name: Check for common error patterns in logs
+      set_fact:
+        has_import_error: "{{ 'ImportError' in service_logs.stdout or 'ModuleNotFoundError' in service_logs.stdout }}"
+        has_permission_error: "{{ 'Permission denied' in service_logs.stdout }}"
+        has_config_error: "{{ 'config.json' in service_logs.stdout and 'error' in service_logs.stdout.lower() }}"
+        has_port_error: "{{ 'Address already in use' in service_logs.stdout }}"
+
+    - name: Display detected issues
+      debug:
+        msg: |
+          Detected issues:
+            Import/Module errors: {{ has_import_error }}
+            Permission errors: {{ has_permission_error }}
+            Configuration errors: {{ has_config_error }}
+            Port conflict: {{ has_port_error }}
+
+    - name: Fix file permissions if needed
+      when: has_permission_error | bool
+      block:
+        - name: Ensure correct ownership of application directory
+          file:
+            path: "{{ app_dir }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            recurse: yes
+
+        - name: Ensure required directories exist with correct permissions
+          file:
+            path: "{{ app_dir }}/{{ item }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_user }}"
+            mode: "0755"
+          loop:
+            - logs
+            - uploads
+            - output
+
+    - name: Check if configuration file exists
+      stat:
+        path: "{{ app_dir }}/config.json"
+      register: config_file
+
+    - name: Create default configuration if missing
+      when: not config_file.stat.exists or has_config_error | bool
+      copy:
+        content: |
+          {
+            "plotter_info": {
+              "model": 8,
+              "nickname": "RaspberryPi-Plotter-{{ ansible_hostname }}",
+              "port": null,
+              "port_config": 0
+            },
+            "plotter_settings": {
+              "speed_pendown": 25,
+              "speed_penup": 75,
+              "accel": 75,
+              "pen_pos_down": 40,
+              "pen_pos_up": 60,
+              "pen_rate_lower": 50,
+              "pen_rate_raise": 50,
+              "handling": 1,
+              "homing": true,
+              "model": 8,
+              "auto_rotate": true,
+              "reordering": 0,
+              "report_time": true
+            },
+            "api_settings": {
+              "host": "0.0.0.0",
+              "port": 5000,
+              "debug": false,
+              "cors_enabled": true
+            },
+            "version": "1.0.0",
+            "last_updated": "{{ ansible_date_time.iso8601 }}"
+          }
+        dest: "{{ app_dir }}/config.json"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0644"
+        backup: yes
+
+    - name: Check Python virtual environment
+      stat:
+        path: "{{ venv_dir }}/bin/python"
+      register: venv_exists
+
+    - name: Fix Python dependencies if needed
+      when: has_import_error | bool or not venv_exists.stat.exists
+      block:
+        - name: Ensure virtual environment exists
+          become: no
+          become_user: "{{ app_user }}"
+          command: python3 -m venv {{ venv_dir }}
+          args:
+            creates: "{{ venv_dir }}/bin/activate"
+
+        - name: Upgrade pip in virtual environment
+          become: no
+          become_user: "{{ app_user }}"
+          pip:
+            name: pip
+            state: latest
+            virtualenv: "{{ venv_dir }}"
+
+        - name: Reinstall Python dependencies
+          become: no
+          become_user: "{{ app_user }}"
+          pip:
+            requirements: "{{ app_dir }}/requirements.txt"
+            virtualenv: "{{ venv_dir }}"
+            state: forcereinstall
+
+        - name: Reinstall NextDraw library
+          become: no
+          become_user: "{{ app_user }}"
+          pip:
+            name: https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+            virtualenv: "{{ venv_dir }}"
+            state: latest
+          ignore_errors: yes
+
+    - name: Kill any processes using the API port
+      when: has_port_error | bool
+      shell: |
+        fuser -k {{ api_port }}/tcp || true
+      ignore_errors: yes
+
+    - name: Test Flask app directly
+      block:
+        - name: Stop the service temporarily
+          systemd:
+            name: "{{ app_name }}"
+            state: stopped
+
+        - name: Test if Flask app can start
+          become: no
+          become_user: "{{ app_user }}"
+          shell: |
+            cd {{ app_dir }}
+            timeout 10s {{ venv_dir }}/bin/python -c "
+            import sys
+            try:
+                from app import app
+                print('SUCCESS: Flask app can be imported')
+                sys.exit(0)
+            except Exception as e:
+                print(f'ERROR: {str(e)}')
+                sys.exit(1)
+            "
+          register: flask_test
+          changed_when: false
+          ignore_errors: yes
+
+        - name: Display Flask test result
+          debug:
+            msg: "{{ flask_test.stdout }}"
+
+    - name: Check nginx configuration
+      command: nginx -t
+      register: nginx_test
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Display nginx test result
+      debug:
+        msg: "Nginx config test: {{ 'PASSED' if nginx_test.rc == 0 else 'FAILED' }}"
+
+    - name: Restart services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+        daemon_reload: yes
+      loop:
+        - "{{ app_name }}"
+        - nginx
+
+    - name: Wait for services to stabilize
+      pause:
+        seconds: 5
+
+    - name: Test API endpoints
+      uri:
+        url: "http://localhost:{{ api_port }}/health"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: health_check
+      ignore_errors: yes
+
+    - name: Test nginx proxy
+      uri:
+        url: "http://localhost/health"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: nginx_check
+      ignore_errors: yes
+
+    - name: Final status report
+      vars:
+        direct_api_works: "{{ health_check.status | default(0) == 200 }}"
+        nginx_proxy_works: "{{ nginx_check.status | default(0) == 200 }}"
+      debug:
+        msg: |
+          ============================================
+          Troubleshooting Results for {{ inventory_hostname }}
+          ============================================
+
+          Service Status:
+            - {{ app_name }}: {{ service_status.results[0].status.ActiveState }}
+            - nginx: {{ service_status.results[1].status.ActiveState }}
+
+          API Tests:
+            - Direct API (port {{ api_port }}): {{ 'WORKING' if direct_api_works else 'FAILED' }}
+            - Through Nginx (port 80): {{ 'WORKING' if nginx_proxy_works else 'FAILED' }}
+
+          Issues Found and Fixed:
+            - Import/Module errors: {{ 'FIXED' if has_import_error else 'None found' }}
+            - Permission errors: {{ 'FIXED' if has_permission_error else 'None found' }}
+            - Config errors: {{ 'FIXED' if has_config_error else 'None found' }}
+            - Port conflicts: {{ 'FIXED' if has_port_error else 'None found' }}
+
+          {% if nginx_proxy_works %}
+          ✓ SUCCESS: The API is now accessible at http://{{ ansible_default_ipv4.address }}/
+          {% else %}
+          ✗ PROBLEM PERSISTS: Manual intervention required
+
+          Next steps:
+          1. SSH to {{ inventory_hostname }}
+          2. Check logs: sudo journalctl -u {{ app_name }} -f
+          3. Test manually: cd {{ app_dir }} && {{ venv_dir }}/bin/python app.py
+          {% endif %}
+
+    - name: Show additional diagnostics if still failing
+      when: nginx_check.status | default(0) != 200
+      block:
+        - name: Get last 20 lines of service logs
+          shell: journalctl -u {{ app_name }} -n 20 --no-pager
+          register: recent_logs
+
+        - name: Get nginx error logs
+          shell: tail -20 /var/log/nginx/error.log
+          register: nginx_logs
+          ignore_errors: yes
+
+        - name: Display diagnostic logs
+          debug:
+            msg: |
+              Recent {{ app_name }} logs:
+              {{ recent_logs.stdout }}
+
+              Recent nginx errors:
+              {{ nginx_logs.stdout | default('No nginx error logs found') }}
+
+  handlers:
+    - name: restart services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - "{{ app_name }}"
+        - nginx
