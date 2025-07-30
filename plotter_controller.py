@@ -47,6 +47,8 @@ class PlotterController:
         self.last_error = None
         self.lock = threading.Lock()
         self.plot_thread = None
+        self.progress_plob = None  # Placeholder for plot progress data
+        self.output_svg = None     # Storage for the most recent output SVG
 
         # Status tracking
         self.stats = {
@@ -181,8 +183,16 @@ class PlotterController:
             try:
                 result = self.nextdraw.plot_run(True)  # Return output SVG
 
+                # Store the output SVG for possible pause/resume operations
+                if isinstance(result, str):
+                    self.output_svg = result
+
                 # Check if job was cancelled or paused
                 if not self.is_plotting:
+                    # If we're paused, the job data should already contain the output_svg
+                    # from the pause method, so we return a different message
+                    if self.is_paused:
+                        return {"success": False, "message": "Job was paused and can be resumed"}
                     return {"success": False, "error": "Job was cancelled"}
 
                 plot_time = time.time() - start_time
@@ -192,6 +202,10 @@ class PlotterController:
                 self.stats["successful_jobs"] += 1
                 self.stats["total_plot_time"] += plot_time
                 self.stats["last_job_time"] = plot_time
+
+                # Update current_job with output SVG data
+                if isinstance(result, str) and self.current_job:
+                    self.current_job['output_svg'] = result
 
                 logger.info(f"Plot job completed in {plot_time:.2f} seconds")
 
@@ -214,10 +228,16 @@ class PlotterController:
 
         finally:
             with self.lock:
-                self.current_job = None
+                # Only clear current_job if not paused - we need it for resume
+                if not self.is_paused:
+                    self.current_job = None
+                    # Also clear output_svg when job completes normally
+                    self.output_svg = None
                 self.is_plotting = False
-                self.is_paused = False
-                self.status = "IDLE"
+                # Don't change is_paused here - we need that state for resuming
+                # Only set status to IDLE if not paused
+                if not self.is_paused:
+                    self.status = "IDLE"
 
     def pause(self):
         """Pause current plotting job"""
@@ -226,10 +246,26 @@ class PlotterController:
                 if not self.is_plotting or self.is_paused:
                     return False
 
-                # NextDraw doesn't have direct pause - would need to implement
-                # by stopping current job and saving state for resume
+                # Call NextDraw pause function and capture the current SVG state
                 self.is_paused = True
                 self.status = "PAUSED"
+
+                try:
+                    # Request pause without expecting output
+                    if self.nextdraw:
+                        self.nextdraw.transmit_pause_request()
+
+                    # Save the progress plot object if available
+                    if self.nextdraw and hasattr(self.nextdraw, 'get_progress_plob'):
+                        self.progress_plob = self.nextdraw.get_progress_plob()
+
+                    # Store the previously saved output SVG in the current job for resume
+                    if self.output_svg and self.current_job is not None:
+                        self.current_job['output_svg'] = self.output_svg
+                        logger.info("Stored SVG state for resume")
+                except Exception as e:
+                    logger.warning(f"Could not capture SVG state during pause: {str(e)}")
+
                 logger.info("Plot job paused")
                 return True
 
@@ -241,16 +277,101 @@ class PlotterController:
         """Resume paused plotting job"""
         try:
             with self.lock:
-                if not self.is_paused:
+                if not self.is_paused or not self.current_job:
+                    logger.warning("No paused job to resume")
                     return False
 
+                logger.info("Resuming paused plot job")
+
+                # Initialize NextDraw for resuming plot
+                if not self.nextdraw:
+                    self.nextdraw = NextDraw()
+
+                # Get current configuration
+                config = self.config_manager.get_current_config()
+                self._apply_config(config)
+
+                # Prepare NextDraw for resuming
+                if not self.nextdraw:
+                    logger.error("No NextDraw instance available for resuming")
+                    return False
+
+                # First try to use the progress plot object
+                if self.progress_plob:
+                    logger.info("Resuming with progress plot object")
+                    self.nextdraw.plot_setup(self.progress_plob)
+                # Next try the saved output SVG in the current job
+                elif self.current_job and 'output_svg' in self.current_job:
+                    logger.info("Resuming with saved output SVG from job")
+                    self.nextdraw.plot_setup(self.current_job.get('output_svg'))
+                # Finally try the class-level stored output SVG
+                elif self.output_svg:
+                    logger.info("Resuming with stored output SVG")
+                    self.nextdraw.plot_setup(self.output_svg)
+                else:
+                    logger.error("No resume data available")
+                    return False
+
+                self.nextdraw.options.report_time = True
+                self.nextdraw.options.preview = False
+                self.nextdraw.options.mode = "res_plot"
+
+                # Apply any job-specific config overrides
+                job_config = self.current_job.get('config_overrides', {})
+                for key, value in job_config.items():
+                    if hasattr(self.nextdraw.options, key):
+                        setattr(self.nextdraw.options, key, value)
+
+                # Update NextDraw with new configuration
+                if hasattr(self.nextdraw, 'update'):
+                    self.nextdraw.update()
+
+                # Start plotting in a separate thread to not block the API
+                def resume_thread():
+                    try:
+                        # Execute the resumed plot
+                        output_svg = None
+                        if self.nextdraw:
+                            output_svg = self.nextdraw.plot_run(True)
+
+                        # Update job data with new output SVG if available
+                        if output_svg and self.current_job:
+                            self.current_job['output_svg'] = output_svg
+                            # Also update the class-level stored SVG
+                            self.output_svg = output_svg
+
+                        logger.info("Plot job completed successfully")
+
+                        with self.lock:
+                            self.is_plotting = False
+                            self.is_paused = False
+                            self.status = "IDLE"
+
+                    except Exception as e:
+                        logger.error(f"Error in resume thread: {str(e)}")
+                        with self.lock:
+                            self.is_plotting = False
+                            self.is_paused = False
+                            self.status = "ERROR"
+                            self.last_error = str(e)
+
+                # Start the resume thread
+                self.plot_thread = threading.Thread(target=resume_thread)
+                self.plot_thread.daemon = True
+                self.plot_thread.start()
+
+                # Update controller state
                 self.is_paused = False
+                self.is_plotting = True
                 self.status = "PLOTTING"
+
                 logger.info("Plot job resumed")
                 return True
 
         except Exception as e:
             logger.error(f"Failed to resume: {str(e)}")
+            self.status = "ERROR"
+            self.last_error = str(e)
             return False
 
     def stop(self):

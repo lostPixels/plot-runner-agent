@@ -160,7 +160,7 @@ def submit_plot_json():
 
     # Update application status with job info
     update_status("PLOTTING", job_data)
-    
+
     # Execute job in a new thread
     def execute_in_thread():
         try:
@@ -396,11 +396,23 @@ def pause_plotting():
 def resume_plotting():
     """Resume paused plotting job"""
     try:
+        logger.info("Request to resume plot received")
+
+        # Check if there's a paused job
+        if not plotter_controller.is_paused:
+            return jsonify({"error": "No paused job to resume"}), 400
+
+        # Attempt to resume the plot
         if plotter_controller.resume():
+            # Update application status
             update_status("PLOTTING", app_status.get("job_info"))
+            logger.info("Plot resumed successfully")
+
+            # Successful resume
             return jsonify({"message": "Plotting resumed"})
         else:
-            return jsonify({"error": "No paused job to resume"}), 400
+            logger.error("Resume failed: No valid resume data available")
+            return jsonify({"error": "Failed to resume plotting. No valid resume data available"}), 400
     except Exception as e:
         logger.error(f"Error resuming: {str(e)}")
         return jsonify({"error": str(e)}), 500
