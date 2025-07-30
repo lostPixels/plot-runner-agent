@@ -419,6 +419,7 @@ class PlotterController:
             # Execute specific utility commands
             if command == "home":
                 nd.options.model = 10
+                nd.update()
                 nd.options.mode = "find_home"
                 result = nd.plot_run()
                 return {"success": True, "message": "Moved to home position"}
@@ -466,11 +467,6 @@ class PlotterController:
             elif command == "go_to_limit":
                 # Go to plotter limit
                 nd.interactive()                # Enter interactive context
-                nd.options.model = 5
-                nd.options.homing = False
-                nd.options.report_time = True
-                nd.options.preview = False
-                nd.options.penlift = 3
                 nd.update()
                 if not nd.connect():
                     return {"success": False, "message": "No connection"}
