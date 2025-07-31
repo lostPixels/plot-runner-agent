@@ -108,7 +108,6 @@
             recursive: yes
             checksum: yes
             rsync_opts:
-                - "--exclude=.git"
                 - "--exclude=__pycache__"
                 - "--exclude=*.pyc"
                 - "--exclude=.env"
