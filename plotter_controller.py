@@ -531,3 +531,30 @@ class PlotterController:
                 return {"success": False, "message": "Failed to connect"}
         except Exception as e:
             return {"success": False, "message": str(e)}
+
+    def plot_file(self, svg_path, config_overrides=None, job_name=None, layer_name=None):
+        """Plot an SVG file with optional layer filtering"""
+        try:
+            # Check if file exists
+            if not os.path.exists(svg_path):
+                return {"success": False, "error": f"SVG file not found: {svg_path}"}
+
+            # If a specific layer is requested, we'll need to filter the SVG
+            # For now, pass the full file to execute_job
+            # TODO: Add layer filtering logic if layer_name is provided
+
+            # Prepare job data
+            job_data = {
+                'svg_file': svg_path,
+                'name': job_name or f'Plot_{int(time.time())}',
+                'config_overrides': config_overrides or {},
+                'layer_name': layer_name  # Store for potential future use
+            }
+
+            # Execute the job
+            result = self.execute_job(job_data)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in plot_file: {str(e)}")
+            return {"success": False, "error": str(e)}

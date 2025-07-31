@@ -161,3 +161,5 @@ temp/
 # SVG test files
 test_*.svg
 example_*.svg
+
+projects/**

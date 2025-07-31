@@ -1,6 +1,6 @@
 """
 Project Manager for NextDraw Plotter API
-Handles project-based workflow with multi-layer SVG support
+Handles project-based workflow with single SVG containing multiple layers
 """
 
 import os
@@ -13,15 +13,9 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from enum import Enum
 import logging
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
-
-class LayerStatus(Enum):
-    """Status for individual layer uploads"""
-    NOT_STARTED = "not_started"
-    UPLOADING = "uploading"
-    COMPLETE = "complete"
-    ERROR = "error"
 
 class ProjectStatus(Enum):
     """Overall project status"""
@@ -33,7 +27,7 @@ class ProjectStatus(Enum):
     ERROR = "error"
 
 class ProjectManager:
-    """Manages single active project with multi-layer support"""
+    """Manages single active project with SVG containing multiple layers"""
 
     def __init__(self, storage_dir='projects'):
         self.storage_dir = storage_dir
@@ -61,7 +55,6 @@ class ProjectManager:
                 # Create project structure
                 project_dir = os.path.join(self.storage_dir, project_id)
                 os.makedirs(project_dir)
-                os.makedirs(os.path.join(project_dir, 'layers'))
                 os.makedirs(os.path.join(project_dir, 'temp'))
 
                 # Initialize project
@@ -73,113 +66,85 @@ class ProjectManager:
                     'updated_at': datetime.now().isoformat(),
                     'status': ProjectStatus.CREATED.value,
                     'config': project_data.get('config', {}),
-                    'layers': {},
-                    'total_layers': project_data.get('total_layers', 1),
-                    'uploaded_layers': 0,
+                    'svg_file': None,
+                    'svg_uploaded': False,
+                    'file_size': 0,
+                    'available_layers': [],  # Will be populated when SVG is uploaded
                     'project_dir': project_dir,
-                    'metadata': project_data.get('metadata', {})
+                    'metadata': project_data.get('metadata', {}),
+                    'upload_progress': 0
                 }
-
-                # Initialize layers
-                for i in range(self.current_project['total_layers']):
-                    layer_id = f"layer_{i}"
-                    self.current_project['layers'][layer_id] = {
-                        'id': layer_id,
-                        'index': i,
-                        'name': project_data.get('layer_names', {}).get(layer_id, f"Layer {i}"),
-                        'status': LayerStatus.NOT_STARTED.value,
-                        'file_path': None,
-                        'file_size': 0,
-                        'upload_progress': 0,
-                        'error_message': None
-                    }
 
                 # Save project state
                 self._save_project_state()
 
-                logger.info(f"Created project {project_id} with {self.current_project['total_layers']} layers")
+                logger.info(f"Created project {project_id}")
                 return self._get_project_info()
 
         except Exception as e:
             logger.error(f"Error creating project: {str(e)}")
             raise
 
-    def upload_layer(self, layer_id: str, file_data: bytes, filename: str) -> Dict[str, Any]:
-        """Upload a single layer SVG file"""
+    def upload_svg(self, file_data: bytes, filename: str) -> Dict[str, Any]:
+        """Upload the single SVG file containing all layers"""
         try:
             with self.project_lock:
                 if not self.current_project:
                     raise Exception("No active project")
 
-                if layer_id not in self.current_project['layers']:
-                    raise Exception(f"Invalid layer ID: {layer_id}")
-
-                layer = self.current_project['layers'][layer_id]
-
                 # Update status
-                layer['status'] = LayerStatus.UPLOADING.value
                 self.current_project['status'] = ProjectStatus.UPLOADING.value
                 self.current_project['updated_at'] = datetime.now().isoformat()
 
                 # Save file
-                safe_filename = f"{layer_id}_{hashlib.md5(filename.encode()).hexdigest()[:8]}.svg"
-                file_path = os.path.join(self.current_project['project_dir'], 'layers', safe_filename)
+                safe_filename = f"design_{hashlib.md5(filename.encode()).hexdigest()[:8]}.svg"
+                file_path = os.path.join(self.current_project['project_dir'], safe_filename)
 
                 with open(file_path, 'wb') as f:
                     f.write(file_data)
 
-                # Update layer info
-                layer['file_path'] = file_path
-                layer['file_size'] = len(file_data)
-                layer['original_filename'] = filename
-                layer['uploaded_at'] = datetime.now().isoformat()
-                layer['status'] = LayerStatus.COMPLETE.value
-                layer['upload_progress'] = 100
+                # Update project info
+                self.current_project['svg_file'] = file_path
+                self.current_project['file_size'] = len(file_data)
+                self.current_project['original_filename'] = filename
+                self.current_project['uploaded_at'] = datetime.now().isoformat()
+                self.current_project['svg_uploaded'] = True
+                self.current_project['upload_progress'] = 100
 
-                # Update project counts
-                self.current_project['uploaded_layers'] = sum(
-                    1 for l in self.current_project['layers'].values()
-                    if l['status'] == LayerStatus.COMPLETE.value
-                )
+                # Extract layer information from SVG
+                self._extract_layers_from_svg(file_path)
 
-                # Check if all layers uploaded
-                if self.current_project['uploaded_layers'] == self.current_project['total_layers']:
-                    self.current_project['status'] = ProjectStatus.READY.value
-                    logger.info(f"Project {self.current_project['id']} is ready for plotting")
+                # Update status to ready
+                self.current_project['status'] = ProjectStatus.READY.value
+                logger.info(f"Project {self.current_project['id']} is ready for plotting")
 
                 # Save state
                 self._save_project_state()
 
-                return self._get_layer_info(layer_id)
+                return self._get_project_info()
 
         except Exception as e:
-            logger.error(f"Error uploading layer {layer_id}: {str(e)}")
-            if self.current_project and layer_id in self.current_project['layers']:
-                self.current_project['layers'][layer_id]['status'] = LayerStatus.ERROR.value
-                self.current_project['layers'][layer_id]['error_message'] = str(e)
+            logger.error(f"Error uploading SVG: {str(e)}")
+            if self.current_project:
+                self.current_project['status'] = ProjectStatus.ERROR.value
+                self.current_project['error_message'] = str(e)
                 self._save_project_state()
             raise
 
-    def upload_layer_chunked(self, layer_id: str, chunk_data: bytes, chunk_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle chunked upload for large layer files"""
+    def upload_svg_chunked(self, chunk_data: bytes, chunk_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle chunked upload for large SVG files"""
         try:
             with self.project_lock:
                 if not self.current_project:
                     raise Exception("No active project")
 
-                if layer_id not in self.current_project['layers']:
-                    raise Exception(f"Invalid layer ID: {layer_id}")
-
-                layer = self.current_project['layers'][layer_id]
-
                 # Update status if first chunk
                 if chunk_info['chunk_number'] == 0:
-                    layer['status'] = LayerStatus.UPLOADING.value
                     self.current_project['status'] = ProjectStatus.UPLOADING.value
 
                 # Create temp file for chunks
                 temp_dir = os.path.join(self.current_project['project_dir'], 'temp')
-                chunk_file_id = chunk_info.get('file_id', layer_id)
+                chunk_file_id = chunk_info.get('file_id', 'svg_upload')
                 chunk_path = os.path.join(temp_dir, f"{chunk_file_id}_chunk_{chunk_info['chunk_number']}")
 
                 # Save chunk
@@ -187,15 +152,15 @@ class ProjectManager:
                     f.write(chunk_data)
 
                 # Update progress
-                layer['upload_progress'] = int((chunk_info['chunk_number'] + 1) / chunk_info['total_chunks'] * 100)
+                self.current_project['upload_progress'] = int((chunk_info['chunk_number'] + 1) / chunk_info['total_chunks'] * 100)
 
                 # Check if all chunks received
                 chunk_files = [f for f in os.listdir(temp_dir) if f.startswith(f"{chunk_file_id}_chunk_")]
 
                 if len(chunk_files) == chunk_info['total_chunks']:
                     # Reassemble file
-                    safe_filename = f"{layer_id}_{hashlib.md5(chunk_info['filename'].encode()).hexdigest()[:8]}.svg"
-                    final_path = os.path.join(self.current_project['project_dir'], 'layers', safe_filename)
+                    safe_filename = f"design_{hashlib.md5(chunk_info['filename'].encode()).hexdigest()[:8]}.svg"
+                    final_path = os.path.join(self.current_project['project_dir'], safe_filename)
 
                     with open(final_path, 'wb') as final_file:
                         for i in range(chunk_info['total_chunks']):
@@ -205,43 +170,89 @@ class ProjectManager:
                             # Remove chunk after reading
                             os.remove(chunk_path)
 
-                    # Update layer info
-                    layer['file_path'] = final_path
-                    layer['file_size'] = os.path.getsize(final_path)
-                    layer['original_filename'] = chunk_info['filename']
-                    layer['uploaded_at'] = datetime.now().isoformat()
-                    layer['status'] = LayerStatus.COMPLETE.value
-                    layer['upload_progress'] = 100
+                    # Update project info
+                    self.current_project['svg_file'] = final_path
+                    self.current_project['file_size'] = os.path.getsize(final_path)
+                    self.current_project['original_filename'] = chunk_info['filename']
+                    self.current_project['uploaded_at'] = datetime.now().isoformat()
+                    self.current_project['svg_uploaded'] = True
+                    self.current_project['upload_progress'] = 100
 
-                    # Update project counts
-                    self.current_project['uploaded_layers'] = sum(
-                        1 for l in self.current_project['layers'].values()
-                        if l['status'] == LayerStatus.COMPLETE.value
-                    )
+                    # Extract layer information from SVG
+                    self._extract_layers_from_svg(final_path)
 
-                    # Check if all layers uploaded
-                    if self.current_project['uploaded_layers'] == self.current_project['total_layers']:
-                        self.current_project['status'] = ProjectStatus.READY.value
-                        logger.info(f"Project {self.current_project['id']} is ready for plotting")
+                    # Update status to ready
+                    self.current_project['status'] = ProjectStatus.READY.value
+                    logger.info(f"Project {self.current_project['id']} is ready for plotting")
 
                 # Save state
                 self._save_project_state()
 
                 return {
-                    'layer_id': layer_id,
-                    'status': layer['status'],
-                    'progress': layer['upload_progress'],
+                    'status': self.current_project['status'],
+                    'progress': self.current_project['upload_progress'],
                     'chunks_received': len(chunk_files),
                     'total_chunks': chunk_info['total_chunks']
                 }
 
         except Exception as e:
-            logger.error(f"Error handling chunked upload for layer {layer_id}: {str(e)}")
-            if self.current_project and layer_id in self.current_project['layers']:
-                self.current_project['layers'][layer_id]['status'] = LayerStatus.ERROR.value
-                self.current_project['layers'][layer_id]['error_message'] = str(e)
+            logger.error(f"Error handling chunked upload: {str(e)}")
+            if self.current_project:
+                self.current_project['status'] = ProjectStatus.ERROR.value
+                self.current_project['error_message'] = str(e)
                 self._save_project_state()
             raise
+
+    def _extract_layers_from_svg(self, svg_path: str):
+        """Extract layer information from the SVG file"""
+        try:
+            tree = ET.parse(svg_path)
+            root = tree.getroot()
+
+            # Define namespace
+            ns = {'svg': 'http://www.w3.org/2000/svg',
+                  'inkscape': 'http://www.inkscape.org/namespaces/inkscape'}
+
+            layers = []
+
+            # Look for Inkscape layers (groups with inkscape:groupmode="layer")
+            for group in root.findall(".//svg:g[@inkscape:groupmode='layer']", ns):
+                layer_name = group.get('{http://www.inkscape.org/namespaces/inkscape}label', '')
+                layer_id = group.get('id', '')
+
+                if layer_name:
+                    layers.append({
+                        'id': layer_id,
+                        'name': layer_name
+                    })
+
+            # If no Inkscape layers found, look for regular groups
+            if not layers:
+                for i, group in enumerate(root.findall(".//svg:g", ns)):
+                    layer_id = group.get('id', f'layer_{i}')
+                    layer_name = group.get('inkscape:label', layer_id)
+
+                    layers.append({
+                        'id': layer_id,
+                        'name': layer_name
+                    })
+
+            # If still no groups found, treat the entire SVG as one layer
+            if not layers:
+                layers.append({
+                    'id': 'default',
+                    'name': 'Default Layer'
+                })
+
+            self.current_project['available_layers'] = layers
+            logger.info(f"Found {len(layers)} layers in SVG: {[l['name'] for l in layers]}")
+
+        except Exception as e:
+            logger.warning(f"Could not parse SVG layers: {str(e)}. Treating as single layer.")
+            self.current_project['available_layers'] = [{
+                'id': 'default',
+                'name': 'Default Layer'
+            }]
 
     def get_project_status(self) -> Optional[Dict[str, Any]]:
         """Get current project status"""
@@ -250,15 +261,6 @@ class ProjectManager:
                 return None
             return self._get_project_info()
 
-    def get_layer_info(self, layer_id: str) -> Optional[Dict[str, Any]]:
-        """Get specific layer information"""
-        with self.project_lock:
-            if not self.current_project:
-                return None
-            if layer_id not in self.current_project['layers']:
-                return None
-            return self._get_layer_info(layer_id)
-
     def is_project_ready(self) -> bool:
         """Check if current project is ready for plotting"""
         with self.project_lock:
@@ -266,14 +268,35 @@ class ProjectManager:
                 return False
             return self.current_project['status'] == ProjectStatus.READY.value
 
-    def get_layer_file_path(self, layer_id: str) -> Optional[str]:
-        """Get file path for a specific layer"""
+    def get_svg_file_path(self) -> Optional[str]:
+        """Get the SVG file path for the current project"""
         with self.project_lock:
             if not self.current_project:
                 return None
-            if layer_id not in self.current_project['layers']:
-                return None
-            return self.current_project['layers'][layer_id].get('file_path')
+            return self.current_project.get('svg_file')
+
+    def get_available_layers(self) -> List[Dict[str, str]]:
+        """Get list of available layers in the SVG"""
+        with self.project_lock:
+            if not self.current_project:
+                return []
+            return self.current_project.get('available_layers', [])
+
+    def is_valid_layer(self, layer_name: str) -> bool:
+        """Check if a layer name exists in the current project"""
+        with self.project_lock:
+            if not self.current_project:
+                return False
+
+            # Check if it's the special 'all' layer
+            if layer_name == 'all':
+                return True
+
+            # Check if layer exists by name or id
+            for layer in self.current_project.get('available_layers', []):
+                if layer['name'] == layer_name or layer['id'] == layer_name:
+                    return True
+            return False
 
     def update_project_status(self, status: ProjectStatus):
         """Update project status"""
@@ -331,31 +354,12 @@ class ProjectManager:
             'status': self.current_project['status'],
             'created_at': self.current_project['created_at'],
             'updated_at': self.current_project['updated_at'],
-            'total_layers': self.current_project['total_layers'],
-            'uploaded_layers': self.current_project['uploaded_layers'],
-            'layers': {
-                layer_id: self._get_layer_info(layer_id)
-                for layer_id in self.current_project['layers']
-            },
+            'svg_uploaded': self.current_project['svg_uploaded'],
+            'file_size': self.current_project['file_size'],
+            'upload_progress': self.current_project['upload_progress'],
+            'original_filename': self.current_project.get('original_filename'),
+            'available_layers': self.current_project.get('available_layers', []),
             'metadata': self.current_project.get('metadata', {})
-        }
-
-    def _get_layer_info(self, layer_id: str) -> Dict[str, Any]:
-        """Get sanitized layer information"""
-        if not self.current_project or layer_id not in self.current_project['layers']:
-            return None
-
-        layer = self.current_project['layers'][layer_id]
-        return {
-            'id': layer['id'],
-            'index': layer['index'],
-            'name': layer['name'],
-            'status': layer['status'],
-            'file_size': layer['file_size'],
-            'upload_progress': layer['upload_progress'],
-            'uploaded_at': layer.get('uploaded_at'),
-            'error_message': layer.get('error_message'),
-            'original_filename': layer.get('original_filename')
         }
 
     def _cleanup_temp_dirs(self):

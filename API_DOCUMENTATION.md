@@ -7,10 +7,10 @@ The NextDraw Plotter API provides a REST interface for controlling NextDraw plot
 ### Key Features
 
 - Single active project management
-- Multi-layer SVG support
+- Single SVG file with internal layers
 - Chunked upload for large files
 - Real-time status monitoring
-- Layer-by-layer plotting control
+- Layer-by-layer plotting control from within the SVG
 
 ### Base URL
 
@@ -20,10 +20,10 @@ http://<raspberry-pi-ip>:5000
 
 ## Workflow
 
-1. **Create a new project** - Define project metadata and number of layers
-2. **Upload layer files** - Upload SVG files for each layer (sequential or parallel)
-3. **Monitor status** - Check upload progress and project readiness
-4. **Execute plots** - Plot individual layers on demand
+1. **Create a new project** - Define project metadata
+2. **Upload SVG file** - Upload single SVG file containing all layers
+3. **Monitor status** - Check upload progress and available layers
+4. **Execute plots** - Plot individual layers by name or all layers
 5. **Clear project** - Remove project data when done or before creating a new one
 
 ## API Endpoints
@@ -70,43 +70,24 @@ Get comprehensive system and project status.
         "status": "ready", // created, uploading, ready, plotting, complete, error
         "created_at": "2024-01-15T10:00:00.000Z",
         "updated_at": "2024-01-15T10:15:00.000Z",
-        "total_layers": 3,
-        "uploaded_layers": 3,
-        "layers": {
-            "layer_0": {
-                "id": "layer_0",
-                "index": 0,
-                "name": "Base Layer",
-                "status": "complete", // not_started, uploading, complete, error
-                "file_size": 1048576,
-                "upload_progress": 100,
-                "uploaded_at": "2024-01-15T10:10:00.000Z",
-                "error_message": null,
-                "original_filename": "base.svg"
+        "svg_uploaded": true,
+        "file_size": 5242880,
+        "upload_progress": 100,
+        "original_filename": "design.svg",
+        "available_layers": [
+            {
+                "id": "layer_base",
+                "name": "Base Layer"
             },
-            "layer_1": {
-                "id": "layer_1",
-                "index": 1,
-                "name": "Middle Layer",
-                "status": "complete",
-                "file_size": 2097152,
-                "upload_progress": 100,
-                "uploaded_at": "2024-01-15T10:12:00.000Z",
-                "error_message": null,
-                "original_filename": "middle.svg"
+            {
+                "id": "layer_middle",
+                "name": "Middle Layer"
             },
-            "layer_2": {
-                "id": "layer_2",
-                "index": 2,
-                "name": "Top Layer",
-                "status": "uploading",
-                "file_size": 0,
-                "upload_progress": 45,
-                "uploaded_at": null,
-                "error_message": null,
-                "original_filename": null
+            {
+                "id": "layer_top",
+                "name": "Top Layer"
             }
-        },
+        ],
         "metadata": {
             "custom_field": "value"
         }
@@ -126,12 +107,6 @@ Create a new project. This will clear any existing project data.
 {
     "name": "My Project",
     "description": "A multi-layer plotter project",
-    "total_layers": 3,
-    "layer_names": {
-        "layer_0": "Base Layer",
-        "layer_1": "Middle Layer",
-        "layer_2": "Top Layer"
-    },
     "config": {
         "default_speed": 100,
         "pen_down_position": 90
@@ -147,15 +122,14 @@ Create a new project. This will clear any existing project data.
 
 ```json
 {
-  "message": "Project created successfully",
-  "project": {
-    "id": "project_1234567890_abcd1234",
-    "name": "My Project",
-    "status": "created",
-    "total_layers": 3,
-    "uploaded_layers": 0,
-    "layers": { ... }
-  }
+    "message": "Project created successfully",
+    "project": {
+        "id": "project_1234567890_abcd1234",
+        "name": "My Project",
+        "status": "created",
+        "svg_uploaded": false,
+        "available_layers": []
+    }
 }
 ```
 
@@ -171,11 +145,11 @@ Clear the current project from memory.
 }
 ```
 
-### Layer Upload
+### SVG Upload
 
-#### POST /project/layer/{layer_id}
+#### POST /project/svg
 
-Upload an SVG file for a specific layer. Supports both direct upload and chunked upload for large files.
+Upload the SVG file containing all layers. Supports both direct upload and chunked upload for large files.
 
 ##### Direct Upload (files < 50MB recommended)
 
@@ -190,22 +164,25 @@ Upload an SVG file for a specific layer. Supports both direct upload and chunked
 
 ```bash
 curl -X POST \
-  -F "file=@layer1.svg" \
-  http://localhost:5000/project/layer/layer_0
+  -F "file=@design.svg" \
+  http://localhost:5000/project/svg
 ```
 
 **Response:**
 
 ```json
 {
-    "message": "Layer uploaded successfully",
-    "layer": {
-        "id": "layer_0",
-        "name": "Base Layer",
-        "status": "complete",
+    "message": "SVG uploaded successfully",
+    "project": {
+        "id": "project_1234567890_abcd1234",
+        "name": "My Project",
+        "status": "ready",
+        "svg_uploaded": true,
         "file_size": 1048576,
-        "upload_progress": 100,
-        "uploaded_at": "2024-01-15T10:10:00.000Z"
+        "available_layers": [
+            { "id": "layer_base", "name": "Base Layer" },
+            { "id": "layer_middle", "name": "Middle Layer" }
+        ]
     }
 }
 ```
@@ -232,15 +209,14 @@ curl -X POST \
   -F "chunk_number=0" \
   -F "total_chunks=10" \
   -F "file_id=upload_123456" \
-  -F "filename=large_layer.svg" \
-  http://localhost:5000/project/layer/layer_1
+  -F "filename=large_design.svg" \
+  http://localhost:5000/project/svg
 ```
 
 **Response (chunk received):**
 
 ```json
 {
-    "layer_id": "layer_1",
     "status": "uploading",
     "progress": 10,
     "chunks_received": 1,
@@ -252,8 +228,7 @@ curl -X POST \
 
 ```json
 {
-    "layer_id": "layer_1",
-    "status": "complete",
+    "status": "ready",
     "progress": 100,
     "chunks_received": 10,
     "total_chunks": 10
@@ -262,9 +237,9 @@ curl -X POST \
 
 ### Plotting Control
 
-#### POST /plot/{layer_id}
+#### POST /plot/{layer_name}
 
-Start plotting a specific layer. The project must be in "ready" status. Configuration parameters can be passed in the request body to override defaults for this specific plot.
+Start plotting a specific layer by name. Use "all" to plot all layers. The project must be in "ready" status. Configuration parameters can be passed in the request body to override defaults for this specific plot.
 
 **Request Body (optional):**
 
@@ -281,7 +256,6 @@ Start plotting a specific layer. The project must be in "ready" status. Configur
 ```json
 {
     "message": "Plot started",
-    "layer_id": "layer_0",
     "layer_name": "Base Layer"
 }
 ```
@@ -426,25 +400,20 @@ BASE_URL = "http://192.168.1.100:5000"
 # 1. Create a project
 project_data = {
     "name": "Test Project",
-    "description": "A test project with 2 layers",
-    "total_layers": 2,
-    "layer_names": {
-        "layer_0": "Black Layer",
-        "layer_1": "Red Layer"
-    }
+    "description": "A test project with multiple layers in one SVG"
 }
 
 response = requests.post(f"{BASE_URL}/project", json=project_data)
 project = response.json()
 print(f"Created project: {project['project']['id']}")
 
-# 2. Upload layers
-for i in range(2):
-    layer_id = f"layer_{i}"
-    with open(f"layer_{i}.svg", "rb") as f:
-        files = {"file": f}
-        response = requests.post(f"{BASE_URL}/project/layer/{layer_id}", files=files)
-        print(f"Uploaded {layer_id}: {response.json()}")
+# 2. Upload SVG file
+with open("design.svg", "rb") as f:
+    files = {"file": f}
+    response = requests.post(f"{BASE_URL}/project/svg", files=files)
+    project_info = response.json()
+    print(f"Uploaded SVG: {project_info}")
+    available_layers = project_info['project']['available_layers']
 
 # 3. Check status
 response = requests.get(f"{BASE_URL}/status")
@@ -452,16 +421,16 @@ status = response.json()
 print(f"Project status: {status['project']['status']}")
 
 # 4. Plot layers
-for i in range(2):
-    layer_id = f"layer_{i}"
+for layer in available_layers:
+    layer_name = layer['name']
     # Pass layer-specific configuration
     plot_config = {
-        "speed": 50 + (i * 25),  # Different speed for each layer
+        "speed": 75,
         "pen_up_position": 40,
         "pen_down_position": 90
     }
-    response = requests.post(f"{BASE_URL}/plot/{layer_id}", json=plot_config)
-    print(f"Started plotting {layer_id}")
+    response = requests.post(f"{BASE_URL}/plot/{layer_name}", json=plot_config)
+    print(f"Started plotting {layer_name}")
 
     # Wait for completion
     while True:
@@ -485,12 +454,7 @@ async function runPlotterProject() {
     // 1. Create project
     const projectData = {
         name: "Test Project",
-        description: "A test project with 2 layers",
-        total_layers: 2,
-        layer_names: {
-            layer_0: "Black Layer",
-            layer_1: "Red Layer",
-        },
+        description: "A test project with multiple layers in one SVG",
     };
 
     let response = await fetch(`${BASE_URL}/project`, {
@@ -501,19 +465,18 @@ async function runPlotterProject() {
     const project = await response.json();
     console.log("Created project:", project.project.id);
 
-    // 2. Upload layers
-    for (let i = 0; i < 2; i++) {
-        const layerId = `layer_${i}`;
-        const fileInput = document.getElementById(`file_layer_${i}`);
-        const formData = new FormData();
-        formData.append("file", fileInput.files[0]);
+    // 2. Upload SVG file
+    const fileInput = document.getElementById("svg_file");
+    const formData = new FormData();
+    formData.append("file", fileInput.files[0]);
 
-        response = await fetch(`${BASE_URL}/project/layer/${layerId}`, {
-            method: "POST",
-            body: formData,
-        });
-        console.log(`Uploaded ${layerId}:`, await response.json());
-    }
+    response = await fetch(`${BASE_URL}/project/svg`, {
+        method: "POST",
+        body: formData,
+    });
+    const projectInfo = await response.json();
+    console.log("Uploaded SVG:", projectInfo);
+    const availableLayers = projectInfo.project.available_layers;
 
     // 3. Check status
     response = await fetch(`${BASE_URL}/status`);
@@ -521,20 +484,20 @@ async function runPlotterProject() {
     console.log("Project status:", status.project.status);
 
     // 4. Plot layers
-    for (let i = 0; i < 2; i++) {
-        const layerId = `layer_${i}`;
+    for (const layer of availableLayers) {
+        const layerName = layer.name;
         // Pass layer-specific configuration
         const plotConfig = {
-            speed: 50 + i * 25, // Different speed for each layer
+            speed: 75,
             pen_up_position: 40,
             pen_down_position: 90,
         };
-        response = await fetch(`${BASE_URL}/plot/${layerId}`, {
+        response = await fetch(`${BASE_URL}/plot/${layerName}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(plotConfig),
         });
-        console.log(`Started plotting ${layerId}`);
+        console.log(`Started plotting ${layerName}`);
 
         // Wait for completion
         while (true) {
@@ -559,9 +522,9 @@ async function runPlotterProject() {
 
 1. **File Size Limits**: Maximum file size is 500MB per layer
 2. **Chunked Uploads**: Use chunked uploads for files larger than 50MB
-3. Memory Usage: Only one project is kept in memory at a time
-4. Concurrent Uploads: Layers can be uploaded in parallel for faster preparation
-5. File Cleanup: Project files are automatically deleted when a new project is created
+3. **Memory Usage**: Only one project is kept in memory at a time
+4. **Layer Detection**: Layers are automatically detected from the SVG file structure
+5. **File Cleanup**: Project files are automatically deleted when a new project is created
 
 ## Best Practices
 
@@ -570,4 +533,5 @@ async function runPlotterProject() {
 3. Monitor upload progress through the status endpoint
 4. Handle errors gracefully - the plotter may be busy or disconnected
 5. Clear projects when done to free up storage space
-6. Pass configuration parameters in the `/plot/{layer_id}` request body for layer-specific settings
+6. Pass configuration parameters in the `/plot/{layer_name}` request body for layer-specific settings
+7. Use layer names as shown in `available_layers` from the status response

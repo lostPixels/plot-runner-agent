@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Migration script to switch from old job-based API to new project-based API
+with single SVG file containing multiple layers
 """
 
 import os

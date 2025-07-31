@@ -1,6 +1,6 @@
 """
 NextDraw Plotter API Server - Simplified Project-Based Workflow
-A Flask application for controlling NextDraw plotters with multi-layer project support.
+A Flask application for controlling NextDraw plotters with single SVG containing multiple layers.
 """
 
 import os
@@ -83,8 +83,7 @@ def get_status():
                     "plotter_status": system_status['plotter_status'],
                     "current_layer": system_status['current_layer'],
                     "plot_progress": system_status['plot_progress'],
-                    "last_error": system_status['last_error'],
-                    "plotter_connected": plotter_controller.is_connected()
+                    "last_error": system_status['last_error']
                 },
                 "project": project_status
             }
@@ -96,20 +95,42 @@ def get_status():
         return jsonify({"error": "Failed to get status"}), 500
 
 
-@app.route('/project', methods=['POST'])
+# @app.route('/project', methods=['POST'])
+# def create_new_project():
+#     """Create a new project, clearing any existing project"""
+#     print('Create new project')
+#     try:
+#         data = request.json
+#         if not data:
+#             return jsonify({"error": "No project data provided"}), 400
+
+#         # No specific validation needed - just project name is optional
+
+#         # Create the project
+#         project_info = project_manager.create_project(data)
+
+#         logger.info(f"Created new project: {project_info['id']}")
+
+#         return jsonify({
+#             "message": "Project created successfully",
+#             "project": project_info
+#         }), 201
+
+#     except Exception as e:
+#         logger.error(f"Error creating project: {str(e)}")
+#         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/project', methods=['POST'])
 def create_project():
     """Create a new project, clearing any existing project"""
+    print('Create new project')
     try:
         data = request.json
         if not data:
             return jsonify({"error": "No project data provided"}), 400
 
-        # Validate required fields
-        if 'total_layers' not in data:
-            return jsonify({"error": "total_layers is required"}), 400
-
-        if not isinstance(data['total_layers'], int) or data['total_layers'] < 1:
-            return jsonify({"error": "total_layers must be a positive integer"}), 400
+        # No specific validation needed - just project name is optional
 
         # Create the project
         project_info = project_manager.create_project(data)
@@ -126,9 +147,9 @@ def create_project():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/project/layer/<layer_id>', methods=['POST'])
-def upload_layer(layer_id):
-    """Upload a layer SVG file - supports both direct and chunked upload"""
+@app.route('/api/project/svg', methods=['POST'])
+def upload_svg():
+    """Upload the SVG file - supports both direct and chunked upload"""
     try:
         # Check if project exists
         if not project_manager.current_project:
@@ -140,8 +161,8 @@ def upload_layer(layer_id):
             chunk_info = {
                 'chunk_number': int(request.form.get('chunk_number', 0)),
                 'total_chunks': int(request.form.get('total_chunks', 1)),
-                'file_id': request.form.get('file_id', layer_id),
-                'filename': request.form.get('filename', f'{layer_id}.svg')
+                'file_id': request.form.get('file_id', 'svg_upload'),
+                'filename': request.form.get('filename', 'design.svg')
             }
 
             if 'chunk_data' not in request.files:
@@ -150,7 +171,7 @@ def upload_layer(layer_id):
             chunk_file = request.files['chunk_data']
             chunk_data = chunk_file.read()
 
-            result = project_manager.upload_layer_chunked(layer_id, chunk_data, chunk_info)
+            result = project_manager.upload_svg_chunked(chunk_data, chunk_info)
 
             return jsonify(result), 200
 
@@ -170,24 +191,24 @@ def upload_layer(layer_id):
             if len(file_data) > app.config['MAX_CONTENT_LENGTH']:
                 return jsonify({"error": "File too large"}), 413
 
-            # Upload the layer
-            layer_info = project_manager.upload_layer(layer_id, file_data, file.filename)
+            # Upload the SVG
+            project_info = project_manager.upload_svg(file_data, file.filename)
 
-            logger.info(f"Layer {layer_id} uploaded successfully")
+            logger.info(f"SVG uploaded successfully")
 
             return jsonify({
-                "message": "Layer uploaded successfully",
-                "layer": layer_info
+                "message": "SVG uploaded successfully",
+                "project": project_info
             }), 200
 
     except Exception as e:
-        logger.error(f"Error uploading layer {layer_id}: {str(e)}")
+        logger.error(f"Error uploading SVG: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/plot/<layer_id>', methods=['POST'])
-def plot_layer(layer_id):
-    """Execute plotting for a specific layer"""
+@app.route('/plot/<layer_name>', methods=['POST'])
+def plot_layer(layer_name):
+    """Execute plotting for a specific layer by name"""
     try:
         # Check if project is ready
         if not project_manager.is_project_ready():
@@ -201,22 +222,25 @@ def plot_layer(layer_id):
                     "current_status": system_status['plotter_status']
                 }), 409
 
-        # Get layer file path
-        svg_path = project_manager.get_layer_file_path(layer_id)
-        if not svg_path:
-            return jsonify({"error": f"Layer {layer_id} not found"}), 404
+        # Check if layer is valid
+        if not project_manager.is_valid_layer(layer_name):
+            available_layers = project_manager.get_available_layers()
+            return jsonify({
+                "error": f"Layer '{layer_name}' not found",
+                "available_layers": available_layers
+            }), 404
 
-        # Get layer info
-        layer_info = project_manager.get_layer_info(layer_id)
-        if not layer_info:
-            return jsonify({"error": f"Layer {layer_id} info not found"}), 404
+        # Get SVG file path
+        svg_path = project_manager.get_svg_file_path()
+        if not svg_path:
+            return jsonify({"error": "No SVG file uploaded"}), 404
 
         # Start plotting in background thread
         def execute_plot():
             try:
                 with status_lock:
                     system_status['plotter_status'] = "PLOTTING"
-                    system_status['current_layer'] = layer_id
+                    system_status['current_layer'] = layer_name
                     system_status['plot_progress'] = 0
 
                 project_manager.update_project_status(ProjectStatus.PLOTTING)
@@ -228,23 +252,24 @@ def plot_layer(layer_id):
                 success = plotter_controller.plot_file(
                     svg_path,
                     config_overrides=config_overrides,
-                    job_name=f"{project_manager.current_project['name']}_{layer_info['name']}"
+                    job_name=f"{project_manager.current_project['name']}_{layer_name}",
+                    layer_name=layer_name if layer_name != 'all' else None
                 )
 
                 with status_lock:
                     if success:
                         system_status['plotter_status'] = "IDLE"
                         system_status['plot_progress'] = 100
-                        logger.info(f"Successfully plotted layer {layer_id}")
+                        logger.info(f"Successfully plotted layer {layer_name}")
                     else:
                         system_status['plotter_status'] = "ERROR"
                         system_status['last_error'] = "Plot execution failed"
-                        logger.error(f"Failed to plot layer {layer_id}")
+                        logger.error(f"Failed to plot layer {layer_name}")
 
                     system_status['current_layer'] = None
 
             except Exception as e:
-                logger.error(f"Error executing plot for layer {layer_id}: {str(e)}")
+                logger.error(f"Error executing plot for layer {layer_name}: {str(e)}")
                 with status_lock:
                     system_status['plotter_status'] = "ERROR"
                     system_status['last_error'] = str(e)
@@ -256,12 +281,11 @@ def plot_layer(layer_id):
 
         return jsonify({
             "message": "Plot started",
-            "layer_id": layer_id,
-            "layer_name": layer_info['name']
+            "layer_name": layer_name
         }), 202
 
     except Exception as e:
-        logger.error(f"Error starting plot for layer {layer_id}: {str(e)}")
+        logger.error(f"Error starting plot for layer {layer_name}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

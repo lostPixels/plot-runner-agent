@@ -66,10 +66,14 @@ class APITester:
         """Create a simple test SVG file"""
         if size == 'small':
             svg_content = '''<?xml version="1.0" encoding="UTF-8"?>
-<svg width="100mm" height="100mm" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <rect x="10" y="10" width="80" height="80" fill="none" stroke="black" stroke-width="1"/>
-  <circle cx="50" cy="50" r="30" fill="none" stroke="black" stroke-width="1"/>
-  <path d="M 25 50 L 75 50 M 50 25 L 50 75" stroke="black" stroke-width="1"/>
+<svg width="100mm" height="100mm" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">
+  <g inkscape:groupmode="layer" inkscape:label="Base Layer" id="layer_base">
+    <rect x="10" y="10" width="80" height="80" fill="none" stroke="black" stroke-width="1"/>
+  </g>
+  <g inkscape:groupmode="layer" inkscape:label="Detail Layer" id="layer_detail">
+    <circle cx="50" cy="50" r="30" fill="none" stroke="black" stroke-width="1"/>
+    <path d="M 25 50 L 75 50 M 50 25 L 50 75" stroke="black" stroke-width="1"/>
+  </g>
 </svg>'''
         else:  # large
             # Create a larger SVG with many elements
@@ -80,9 +84,13 @@ class APITester:
                 paths.append(f'<circle cx="{x}" cy="{y}" r="3" fill="none" stroke="black"/>')
 
             svg_content = f'''<?xml version="1.0" encoding="UTF-8"?>
-<svg width="200mm" height="200mm" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-  <rect x="5" y="5" width="190" height="190" fill="none" stroke="black" stroke-width="1"/>
-  {chr(10).join(paths)}
+<svg width="200mm" height="200mm" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape">
+  <g inkscape:groupmode="layer" inkscape:label="Base Layer" id="layer_base">
+    <rect x="5" y="5" width="190" height="190" fill="none" stroke="black" stroke-width="1"/>
+  </g>
+  <g inkscape:groupmode="layer" inkscape:label="Pattern Layer" id="layer_pattern">
+    {chr(10).join(paths)}
+  </g>
 </svg>'''
 
         with open(filename, 'w') as f:
@@ -113,13 +121,7 @@ class APITester:
         # Test 3: Create Project
         project_data = {
             "name": "Test Project",
-            "description": "API test project",
-            "total_layers": 3,
-            "layer_names": {
-                "layer_0": "Base Layer",
-                "layer_1": "Middle Layer",
-                "layer_2": "Top Layer"
-            },
+            "description": "API test project with single SVG",
             "config": {
                 "default_speed": 100,
                 "pen_down_position": 90
@@ -141,21 +143,20 @@ class APITester:
             self.project_id = response.json()['project']['id']
             self.log(f"Created project: {self.project_id}")
 
-        # Test 4: Upload Layers
-        for i in range(3):
-            # Create test SVG
-            svg_file = self.create_test_svg(f"test_layer_{i}.svg")
+        # Test 4: Upload SVG
+        # Create test SVG with layers
+        svg_file = self.create_test_svg("test_design.svg")
 
-            with open(svg_file, 'rb') as f:
-                self.test_endpoint(
-                    f"Upload Layer {i}",
-                    "POST",
-                    f"/project/layer/layer_{i}",
-                    files={'file': f}
-                )
+        with open(svg_file, 'rb') as f:
+            self.test_endpoint(
+                "Upload SVG",
+                "POST",
+                "/project/svg",
+                files={'file': f}
+            )
 
-            # Clean up
-            os.remove(svg_file)
+        # Clean up
+        os.remove(svg_file)
 
         # Test 5: Check Project Status
         response = self.test_endpoint(
@@ -164,10 +165,16 @@ class APITester:
             "/status"
         )
 
+        available_layers = []
         if response:
-            project_status = response.json().get('project', {}).get('status')
+            project = response.json().get('project', {})
+            project_status = project.get('status')
+            available_layers = project.get('available_layers', [])
+
             if project_status == 'ready':
-                self.log("Project is ready for plotting!", 'SUCCESS')
+                self.log(f"Project is ready for plotting! Found {len(available_layers)} layers", 'SUCCESS')
+                for layer in available_layers:
+                    self.log(f"  - {layer['name']} (id: {layer['id']})")
             else:
                 self.log(f"Project status: {project_status}", 'WARNING')
 
@@ -184,7 +191,7 @@ class APITester:
         # Create new project for chunked upload
         chunk_project_data = {
             "name": "Chunked Upload Test",
-            "total_layers": 1
+            "description": "Test chunked upload of large SVG"
         }
 
         response = self.test_endpoint(
@@ -212,7 +219,7 @@ class APITester:
             self.test_endpoint(
                 f"Upload Chunk {i}/{total_chunks}",
                 "POST",
-                "/project/layer/layer_0",
+                "/project/svg",
                 files={'chunk_data': (f'chunk_{i}', chunk_data)},
                 data={
                     'chunk_number': i,
@@ -256,10 +263,13 @@ class APITester:
             "pen_down_position": 85
         }
 
+        # Try to plot using layer name from available_layers if we have any
+        layer_name = available_layers[0]['name'] if available_layers else 'Base Layer'
+
         self.test_endpoint(
-            "Start Plot (will fail without plotter)",
+            f"Start Plot '{layer_name}' (will fail without plotter)",
             "POST",
-            "/plot/layer_0",
+            f"/plot/{layer_name}",
             json=plot_config
         )
 
@@ -304,16 +314,16 @@ class APITester:
             self.test_endpoint(
                 "Upload Without Project (should fail)",
                 "POST",
-                "/project/layer/layer_0",
+                "/project/svg",
                 files={'file': f}
             )
         os.remove(svg_file)
 
-        # Invalid layer ID
+        # Invalid layer name
         self.test_endpoint(
-            "Invalid Layer ID (should fail)",
+            "Invalid Layer Name (should fail)",
             "POST",
-            "/plot/invalid_layer"
+            "/plot/NonExistentLayer"
         )
 
         # Print summary

@@ -7,8 +7,9 @@ This is a simplified, project-based API for controlling NextDraw plotters on Ras
 ## Key Features
 
 - **Single Active Project**: One project in memory at a time for optimal performance
-- **Multi-Layer Support**: Projects can contain multiple SVG layers
-- **Sequential Workflow**: Upload all layers first, then plot on demand
+- **Single SVG File**: One SVG file containing all layers internally
+- **Layer Detection**: Automatically detects layers within the SVG file
+- **Sequential Workflow**: Upload SVG first, then plot individual layers on demand
 - **Chunked Uploads**: Support for large SVG files through chunked uploading
 - **Real-time Status**: Monitor upload progress and plotting status
 - **Resource Efficient**: Optimized for Raspberry Pi 5 constraints
@@ -44,17 +45,14 @@ python test_new_api.py
     ```bash
     curl -X POST http://localhost:5000/project \
       -H "Content-Type: application/json" \
-      -d '{"name": "My Project", "total_layers": 2}'
+      -d '{"name": "My Project", "description": "Multi-layer design"}'
     ```
 
-2. **Upload Layers**
+2. **Upload SVG File**
 
     ```bash
-    curl -X POST http://localhost:5000/project/layer/layer_0 \
-      -F "file=@layer0.svg"
-
-    curl -X POST http://localhost:5000/project/layer/layer_1 \
-      -F "file=@layer1.svg"
+    curl -X POST http://localhost:5000/project/svg \
+      -F "file=@design.svg"
     ```
 
 3. **Check Status**
@@ -66,16 +64,20 @@ python test_new_api.py
 4. **Plot Layers**
 
     ```bash
-    # Plot with layer-specific configuration
-    curl -X POST http://localhost:5000/plot/layer_0 \
+    # Plot specific layer by name with configuration
+    curl -X POST http://localhost:5000/plot/Base%20Layer \
       -H "Content-Type: application/json" \
       -d '{"speed": 50, "pen_up_position": 40}'
 
     # Wait for completion...
 
-    curl -X POST http://localhost:5000/plot/layer_1 \
+    # Plot another layer
+    curl -X POST http://localhost:5000/plot/Detail%20Layer \
       -H "Content-Type: application/json" \
       -d '{"speed": 75, "pen_down_position": 85}'
+
+    # Or plot all layers
+    curl -X POST http://localhost:5000/plot/all
     ```
 
 5. **Clear Project**
@@ -97,11 +99,11 @@ python test_new_api.py
 
 ### Layer Management
 
-- `POST /project/layer/{layer_id}` - Upload layer (supports chunked)
+- `POST /project/svg` - Upload SVG file (supports chunked)
 
 ### Plotting
 
-- `POST /plot/{layer_id}` - Start plotting a layer (config in request body)
+- `POST /plot/{layer_name}` - Start plotting a layer by name or "all" (config in request body)
 - `POST /plot/pause` - Pause current plot
 - `POST /plot/resume` - Resume paused plot
 - `POST /plot/stop` - Stop current plot
@@ -147,11 +149,13 @@ tail -f logs/app.log
 
 - Ensure project is created first
 - Check file size limits (500MB max)
-- Verify layer ID format (layer_0, layer_1, etc.)
+- Ensure SVG file contains valid layer structure
 
 ### Plotting Issues
 
-- Ensure all layers are uploaded (status = "ready")
+- Ensure SVG is uploaded (status = "ready")
+- Check available layers in /status response
+- Use exact layer names as shown in available_layers
 - Check plotter connection in /status
 - Verify plotter configuration in /config
 

@@ -9,47 +9,52 @@ This guide helps you migrate from the old job queue-based API to the new simplif
 ### 1. Conceptual Changes
 
 **Old System:**
+
 - Job queue with multiple concurrent jobs
 - Single SVG per job
 - Jobs could be queued, reordered, and managed independently
 - Complex state management with job history
 
 **New System:**
+
 - Single active project at a time
-- Multiple layers (SVGs) per project
-- Sequential layer upload followed by on-demand plotting
+- Single SVG file containing multiple layers internally
+- Upload one SVG file, then plot individual layers by name
 - Simplified state with focus on current project only
 
 ### 2. Workflow Changes
 
 **Old Workflow:**
+
 ```
 1. Submit job with SVG → 2. Job queued → 3. Job processed automatically → 4. Next job
 ```
 
 **New Workflow:**
+
 ```
-1. Create project → 2. Upload all layers → 3. Plot layers on demand → 4. Clear project
+1. Create project → 2. Upload SVG file → 3. Plot layers on demand → 4. Clear project
 ```
 
 ## API Endpoint Mapping
 
-| Old Endpoint | New Endpoint | Notes |
-|--------------|--------------|-------|
-| `POST /submit-plot` | `POST /project` + `POST /project/layer/{id}` | Split into project creation and layer upload |
-| `POST /submit-plot-json` | `POST /project` + `POST /project/layer/{id}` | Use project creation with embedded config |
-| `POST /upload-plot` | `POST /project/layer/{id}` | Direct layer upload |
-| `POST /upload-plot-chunk` | `POST /project/layer/{id}` | Same endpoint handles chunks |
-| `GET /jobs` | `GET /status` | Status now shows current project only |
-| `POST /pause` | `POST /plot/pause` | Scoped to plot operations |
-| `POST /resume` | `POST /plot/resume` | Scoped to plot operations |
-| `POST /stop` | `POST /plot/stop` | Scoped to plot operations |
+| Old Endpoint              | New Endpoint                          | Notes                                      |
+| ------------------------- | ------------------------------------- | ------------------------------------------ |
+| `POST /submit-plot`       | `POST /project` + `POST /project/svg` | Split into project creation and SVG upload |
+| `POST /submit-plot-json`  | `POST /project` + `POST /project/svg` | Use project creation with embedded config  |
+| `POST /upload-plot`       | `POST /project/svg`                   | Direct SVG upload                          |
+| `POST /upload-plot-chunk` | `POST /project/svg`                   | Same endpoint handles chunks               |
+| `GET /jobs`               | `GET /status`                         | Status now shows current project only      |
+| `POST /pause`             | `POST /plot/pause`                    | Scoped to plot operations                  |
+| `POST /resume`            | `POST /plot/resume`                   | Scoped to plot operations                  |
+| `POST /stop`              | `POST /plot/stop`                     | Scoped to plot operations                  |
 
 ## Code Migration Examples
 
 ### Example 1: Simple Plot Submission
 
 **Old Code:**
+
 ```python
 # Submit a single SVG file
 with open('design.svg', 'rb') as f:
@@ -66,31 +71,35 @@ job_id = response.json()['job_id']
 ```
 
 **New Code:**
+
 ```python
 # Create project first
 project_response = requests.post(
     f"{BASE_URL}/project",
     json={
         'name': 'My Design',
-        'total_layers': 1,
         'config': {'speed': 100}
     }
 )
 
-# Upload the layer
+# Upload the SVG file
 with open('design.svg', 'rb') as f:
     response = requests.post(
-        f"{BASE_URL}/project/layer/layer_0",
+        f"{BASE_URL}/project/svg",
         files={'file': f}
     )
 
-# Start plotting when ready
-plot_response = requests.post(f"{BASE_URL}/plot/layer_0")
+# Get available layers from response
+available_layers = response.json()['project']['available_layers']
+
+# Start plotting a specific layer by name
+plot_response = requests.post(f"{BASE_URL}/plot/{available_layers[0]['name']}")
 ```
 
 ### Example 2: Multi-Layer Project
 
 **Old Code:**
+
 ```python
 # Submit multiple jobs for different colors
 colors = ['black', 'red', 'blue']
@@ -107,32 +116,30 @@ for color in colors:
 ```
 
 **New Code:**
+
 ```python
-# Create multi-layer project
-colors = ['black', 'red', 'blue']
+# Create project
 project_response = requests.post(
     f"{BASE_URL}/project",
     json={
         'name': 'Multi-color Design',
-        'total_layers': len(colors),
-        'layer_names': {
-            f'layer_{i}': f'{color} layer'
-            for i, color in enumerate(colors)
-        }
+        'description': 'Design with multiple color layers'
     }
 )
 
-# Upload all layers
-for i, color in enumerate(colors):
-    with open(f'{color}_layer.svg', 'rb') as f:
-        response = requests.post(
-            f"{BASE_URL}/project/layer/layer_{i}",
-            files={'file': f}
-        )
+# Upload single SVG containing all layers
+with open('multi_layer_design.svg', 'rb') as f:
+    response = requests.post(
+        f"{BASE_URL}/project/svg",
+        files={'file': f}
+    )
 
-# Plot each layer
-for i in range(len(colors)):
-    response = requests.post(f"{BASE_URL}/plot/layer_{i}")
+# Get available layers
+available_layers = response.json()['project']['available_layers']
+
+# Plot each layer by name
+for layer in available_layers:
+    response = requests.post(f"{BASE_URL}/plot/{layer['name']}")
     # Wait for completion before next layer
     while requests.get(f"{BASE_URL}/status").json()['system']['plotter_status'] != 'IDLE':
         time.sleep(1)
@@ -141,6 +148,7 @@ for i in range(len(colors)):
 ### Example 3: Large File Upload
 
 **Old Code:**
+
 ```python
 # Chunked upload
 file_size = os.path.getsize('large_design.svg')
@@ -165,14 +173,15 @@ with open('large_design.svg', 'rb') as f:
 ```
 
 **New Code:**
+
 ```python
 # Create project first
 project_response = requests.post(
     f"{BASE_URL}/project",
-    json={'name': 'Large Design', 'total_layers': 1}
+    json={'name': 'Large Design'}
 )
 
-# Chunked upload to layer
+# Chunked upload of SVG
 file_size = os.path.getsize('large_design.svg')
 chunk_size = 1024 * 1024  # 1MB chunks
 total_chunks = (file_size + chunk_size - 1) // chunk_size
@@ -182,7 +191,7 @@ with open('large_design.svg', 'rb') as f:
     for i in range(total_chunks):
         chunk = f.read(chunk_size)
         response = requests.post(
-            f"{BASE_URL}/project/layer/layer_0",
+            f"{BASE_URL}/project/svg",
             files={'chunk_data': chunk},
             data={
                 'chunk_number': i,
@@ -196,6 +205,7 @@ with open('large_design.svg', 'rb') as f:
 ### Example 4: Status Monitoring
 
 **Old Code:**
+
 ```python
 # Check job queue status
 response = requests.get(f"{BASE_URL}/jobs")
@@ -206,6 +216,7 @@ print(f"Job position: {my_job['queue_position']}")
 ```
 
 **New Code:**
+
 ```python
 # Check project and plot status
 response = requests.get(f"{BASE_URL}/status")
@@ -215,7 +226,8 @@ status = response.json()
 project = status['project']
 if project:
     print(f"Project status: {project['status']}")
-    print(f"Uploaded: {project['uploaded_layers']}/{project['total_layers']}")
+    print(f"SVG uploaded: {project['svg_uploaded']}")
+    print(f"Available layers: {[l['name'] for l in project['available_layers']]}")
 
 # Check plotting status
 system = status['system']
@@ -232,11 +244,13 @@ if system['plotter_status'] == 'PLOTTING':
 
 3. **No Job History**: Completed jobs are not stored. Only current project state is maintained.
 
-4. **Required Project Creation**: You must create a project before uploading any files.
+4. **Required Project Creation**: You must create a project before uploading the SVG file.
 
-5. **Layer IDs**: Layers are identified by `layer_0`, `layer_1`, etc., not custom IDs.
+5. **Layer Names**: Layers are identified by their names from within the SVG file, not by IDs.
 
 6. **Single Active Project**: Creating a new project automatically clears the previous one.
+
+7. **Single SVG File**: Only one SVG file per project, containing all layers internally.
 
 ## Migration Steps
 
@@ -245,8 +259,8 @@ if system['plotter_status'] == 'PLOTTING':
 2. **Implement Project Creation**: Add project creation step before any file uploads.
 
 3. **Update Upload Logic**:
-   - Change upload endpoints to include layer ID
-   - Ensure all layers are uploaded before plotting
+    - Change to single SVG upload endpoint
+    - Extract layer information from the uploaded SVG
 
 4. **Add Explicit Plot Calls**: Replace automatic job processing with explicit plot commands.
 
@@ -258,9 +272,9 @@ if system['plotter_status'] == 'PLOTTING':
 
 1. **Always Create Project First**: Never attempt to upload without an active project.
 
-2. **Upload All Layers Before Plotting**: Ensure project status is "ready" before plotting.
+2. **Upload SVG Before Plotting**: Ensure project status is "ready" before plotting.
 
-3. **Monitor Upload Progress**: Use status endpoint to track multi-layer uploads.
+3. **Monitor Upload Progress**: Use status endpoint to track SVG upload progress.
 
 4. **Sequential Layer Plotting**: Plot one layer at a time and wait for completion.
 
@@ -272,17 +286,18 @@ if system['plotter_status'] == 'PLOTTING':
 
 1. **Forgetting Project Creation**: Uploads will fail without an active project.
 
-2. **Wrong Layer IDs**: Use `layer_0`, `layer_1`, etc., not custom names.
+2. **Wrong Layer Names**: Use exact layer names as shown in available_layers response.
 
 3. **Parallel Plotting**: Only one layer can be plotted at a time.
 
-4. **Missing Layer Uploads**: Project won't be "ready" until all declared layers are uploaded.
+4. **Missing SVG Upload**: Project won't be "ready" until SVG file is uploaded.
 
 5. **Resource Cleanup**: Not clearing projects can lead to storage issues on Raspberry Pi.
 
 ## Support
 
 For questions or issues during migration:
+
 1. Check the API documentation for detailed endpoint information
 2. Monitor the application logs for error details
 3. Test with small projects before migrating production workflows
