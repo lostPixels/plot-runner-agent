@@ -49,6 +49,7 @@ class PlotterController:
         self.plot_thread = None
         self.progress_plob = None  # Placeholder for plot progress data
         self.output_svg = None     # Storage for the most recent output SVG
+        self.progress_callback = None  # Progress update callback
 
         # Status tracking
         self.stats = {
@@ -58,6 +59,10 @@ class PlotterController:
             "total_plot_time": 0,
             "last_job_time": None
         }
+
+    def set_progress_callback(self, callback):
+        """Set callback function for progress updates"""
+        self.progress_callback = callback
 
     def initialize(self):
         """Initialize connection to NextDraw plotter"""

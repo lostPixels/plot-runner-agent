@@ -1,24 +1,22 @@
 """
-NextDraw Plotter API Server
-A Flask application for controlling NextDraw plotters via REST API.
+NextDraw Plotter API Server - Simplified Project-Based Workflow
+A Flask application for controlling NextDraw plotters with multi-layer project support.
 """
 
 import os
 import json
 import threading
 import time
-import tempfile
-import hashlib
-from datetime import datetime
-from flask import Flask, request, jsonify, stream_template
-from flask_cors import CORS
 import logging
+from datetime import datetime
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from logging.handlers import RotatingFileHandler
-from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from plotter_controller import PlotterController
 from config_manager import ConfigManager
-from remote_update import RemoteUpdateManager
+from project_manager import ProjectManager, ProjectStatus
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -26,8 +24,7 @@ CORS(app)
 
 # Configure Flask for large file uploads
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB limit
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000  # 1 year cache
+app.config['REQUEST_TIMEOUT'] = 300  # 5 minutes timeout
 
 # Configure logging
 if not os.path.exists('logs'):
@@ -47,34 +44,20 @@ logger = logging.getLogger(__name__)
 # Initialize core components
 config_manager = ConfigManager()
 plotter_controller = PlotterController(config_manager)
-update_manager = RemoteUpdateManager()
+project_manager = ProjectManager()
 
-# Global status tracking
-app_status = {
-    "status": "IDLE",
-    "job_info": None,
-    "error_message": None,
-    "last_updated": datetime.now().isoformat(),
+# Global system status
+system_status = {
+    "plotter_status": "IDLE",
+    "current_layer": None,
+    "plot_progress": 0,
+    "last_error": None,
     "uptime_start": datetime.now().isoformat()
 }
 
-def update_status(status, job_info=None, error=None):
-    """Update global application status"""
-    global app_status
-    app_status.update({
-        "status": status,
-        "error_message": error,
-        "last_updated": datetime.now().isoformat()
-    })
+# Lock for thread safety
+status_lock = threading.Lock()
 
-    # If job info is provided, update it
-    if job_info:
-        app_status["job_info"] = job_info
-    elif status == "IDLE":
-        # Clear job info when going to IDLE state
-        app_status["job_info"] = None
-
-    logger.info(f"Status updated: {status}")
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -82,387 +65,318 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.1"
-    })
+        "version": "2.0.0",
+        "uptime_start": system_status['uptime_start']
+    }), 200
+
 
 @app.route('/status', methods=['GET'])
 def get_status():
-    """Get current plotter status"""
+    """Get comprehensive system and project status"""
     try:
-        plotter_status = plotter_controller.get_status()
+        with status_lock:
+            project_status = project_manager.get_project_status()
 
-        return jsonify({
-            "plotter": plotter_status,
-            "app": app_status,
-            "config": config_manager.get_current_config()
-        })
+            response = {
+                "timestamp": datetime.now().isoformat(),
+                "system": {
+                    "plotter_status": system_status['plotter_status'],
+                    "current_layer": system_status['current_layer'],
+                    "plot_progress": system_status['plot_progress'],
+                    "last_error": system_status['last_error'],
+                    "plotter_connected": plotter_controller.is_connected()
+                },
+                "project": project_status
+            }
+
+            return jsonify(response), 200
+
     except Exception as e:
         logger.error(f"Error getting status: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to get status"}), 500
 
-@app.route('/plot', methods=['POST'])
-def submit_plot():
-    """Submit a new plot job"""
+
+@app.route('/project', methods=['POST'])
+def create_project():
+    """Create a new project, clearing any existing project"""
     try:
-        # Handle both JSON and multipart/form-data
-        if request.content_type and request.content_type.startswith('multipart/form-data'):
-            return submit_plot_multipart()
-        else:
-            return submit_plot_json()
+        data = request.json
+        if not data:
+            return jsonify({"error": "No project data provided"}), 400
 
-    except Exception as e:
-        logger.error(f"Error submitting plot: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        # Validate required fields
+        if 'total_layers' not in data:
+            return jsonify({"error": "total_layers is required"}), 400
 
-def submit_plot_json():
-    """Handle JSON plot submission"""
-    data = request.get_json()
+        if not isinstance(data['total_layers'], int) or data['total_layers'] < 1:
+            return jsonify({"error": "total_layers must be a positive integer"}), 400
 
-    logger.info("DIRECT EXECUTE JOB")
+        # Create the project
+        project_info = project_manager.create_project(data)
 
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
-
-    # Check if plotter is busy
-    if not plotter_controller.is_idle():
-        return jsonify({"error": "Plotter is busy. Cannot start new job."}), 409
-
-    # Check SVG content size for JSON submissions
-    svg_content = data.get('svg_content', '')
-    if svg_content and len(svg_content) > 100 * 1024 * 1024:  # 100MB
-        return jsonify({
-            "error": "SVG content too large for JSON submission. Use multipart upload instead.",
-            "suggestion": "Use /plot/upload endpoint for files > 100MB"
-        }), 413
-
-    # Validate required fields
-    if 'svg_content' not in data and 'svg_file' not in data:
-        return jsonify({"error": "Either svg_content or svg_file must be provided"}), 400
-
-    # Validate start_mm parameter if provided
-    start_mm = data.get('start_mm')
-    if start_mm is not None:
-        try:
-            start_mm = float(start_mm)
-        except (ValueError, TypeError):
-            return jsonify({"error": "start_mm must be a valid number"}), 400
-
-    # Create job with optional configuration overrides
-    job_data = {
-        "svg_content": data.get('svg_content'),
-        "svg_file": data.get('svg_file'),
-        "config_overrides": data.get('config', {}),
-        "name": data.get('name', f"Job_{int(time.time())}"),
-        "description": data.get('description', ''),
-        "start_mm": start_mm,
-        "submitted_at": datetime.now().isoformat()
-    }
-
-    # Update application status with job info
-    update_status("PLOTTING", job_data)
-
-    # Execute job in a new thread
-    def execute_in_thread():
-        try:
-            result = plotter_controller.execute_job(job_data)
-            if result.get('success', False):
-                update_status("IDLE", None)
-            else:
-                update_status("ERROR", None, result.get('error', 'Unknown error'))
-        except Exception as e:
-            update_status("ERROR", None, str(e))
-
-    threading.Thread(target=execute_in_thread, daemon=True).start()
-
-    return jsonify({
-        "svg_file": data.get('svg_file'),
-        "status": "started",
-    }), 201
-
-def submit_plot_multipart():
-    """Handle multipart file upload"""
-    # Check if plotter is busy
-    if not plotter_controller.is_idle():
-        return jsonify({"error": "Plotter is busy. Cannot start new job."}), 409
-
-    # Create uploads directory if it doesn't exist
-    upload_dir = app.config['UPLOAD_FOLDER']
-    if not os.path.exists(upload_dir):
-        os.makedirs(upload_dir)
-
-    # Check if file is in request
-    if 'svg_file' not in request.files:
-        return jsonify({"error": "No file provided in multipart request"}), 400
-
-    file = request.files['svg_file']
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
-
-    # Validate file extension
-    if not file.filename.lower().endswith('.svg'):
-        return jsonify({"error": "Only SVG files are allowed"}), 400
-
-    # Generate secure filename with timestamp
-    timestamp = int(time.time())
-    secure_name = secure_filename(file.filename)
-    filename = f"{timestamp}_{secure_name}"
-    filepath = os.path.join(upload_dir, filename)
-
-    # Save file with progress tracking for large files
-    try:
-        file.save(filepath)
-
-        # Verify file size
-        file_size = os.path.getsize(filepath)
-        logger.info(f"Uploaded file {filename}, size: {file_size} bytes")
-
-        # Get job metadata from form data
-        start_mm = request.form.get('start_mm')
-        if start_mm is not None and start_mm.strip():
-            try:
-                start_mm = float(start_mm)
-            except ValueError:
-                return jsonify({"error": "start_mm must be a valid number"}), 400
-        else:
-            start_mm = None
-
-        job_data = {
-            "svg_file": filepath,
-            "config_overrides": json.loads(request.form.get('config', '{}')),
-            "name": request.form.get('name', f"Upload_{timestamp}"),
-            "description": request.form.get('description', ''),
-            "start_mm": start_mm,
-            "submitted_at": datetime.now().isoformat(),
-            "file_size": file_size,
-            "original_filename": file.filename
-        }
-
-        # Update application status with job info
-        update_status("PLOTTING", job_data)
-
-        # Execute job in a new thread
-        def execute_in_thread():
-            try:
-                result = plotter_controller.execute_job(job_data)
-                if result.get('success', False):
-                    update_status("IDLE", None)
-                else:
-                    update_status("ERROR", None, result.get('error', 'Unknown error'))
-            except Exception as e:
-                update_status("ERROR", None, str(e))
-                # Clean up file if execution failed
-                if os.path.exists(filepath):
-                    os.remove(filepath)
-
-        threading.Thread(target=execute_in_thread, daemon=True).start()
+        logger.info(f"Created new project: {project_info['id']}")
 
         return jsonify({
-            "status": "started",
-            "file_size": file_size,
-            "uploaded_filename": filename
+            "message": "Project created successfully",
+            "project": project_info
         }), 201
 
     except Exception as e:
-        # Clean up file if job creation failed
-        if os.path.exists(filepath):
-            os.remove(filepath)
-        raise e
+        logger.error(f"Error creating project: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/plot/upload', methods=['POST'])
-def upload_plot():
-    """Dedicated endpoint for large file uploads"""
-    return submit_plot_multipart()
 
-@app.route('/plot/chunk', methods=['POST'])
-def upload_plot_chunk():
-    """Handle chunked uploads for very large files"""
+@app.route('/project/layer/<layer_id>', methods=['POST'])
+def upload_layer(layer_id):
+    """Upload a layer SVG file - supports both direct and chunked upload"""
     try:
-        # Get chunk metadata
-        chunk_number = int(request.form.get('chunk', 0))
-        total_chunks = int(request.form.get('total_chunks', 1))
-        file_id = request.form.get('file_id', '')
-        original_filename = request.form.get('filename', 'upload.svg')
+        # Check if project exists
+        if not project_manager.current_project:
+            return jsonify({"error": "No active project"}), 400
 
-        if not file_id:
-            return jsonify({"error": "file_id required"}), 400
-
-        # Create temp directory for chunks
-        temp_dir = os.path.join(tempfile.gettempdir(), 'nextdraw_chunks', file_id)
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-
-        # Save chunk
-        if 'chunk_data' not in request.files:
-            return jsonify({"error": "No chunk data provided"}), 400
-
-        chunk_file = request.files['chunk_data']
-        chunk_path = os.path.join(temp_dir, f"chunk_{chunk_number}")
-        chunk_file.save(chunk_path)
-
-        # Check if all chunks are uploaded
-        uploaded_chunks = len([f for f in os.listdir(temp_dir) if f.startswith('chunk_')])
-
-        if uploaded_chunks == total_chunks:
-            # Reassemble file
-            upload_dir = app.config['UPLOAD_FOLDER']
-            if not os.path.exists(upload_dir):
-                os.makedirs(upload_dir)
-
-            timestamp = int(time.time())
-            secure_name = secure_filename(original_filename)
-            final_filename = f"{timestamp}_{secure_name}"
-            final_path = os.path.join(upload_dir, final_filename)
-
-            # Combine chunks
-            with open(final_path, 'wb') as final_file:
-                for i in range(total_chunks):
-                    chunk_path = os.path.join(temp_dir, f"chunk_{i}")
-                    with open(chunk_path, 'rb') as chunk:
-                        final_file.write(chunk.read())
-
-            # Clean up chunks
-            import shutil
-            shutil.rmtree(temp_dir)
-
-            # Verify final file
-            file_size = os.path.getsize(final_path)
-
-            # Create job
-            job_data = {
-                "svg_file": final_path,
-                "config_overrides": json.loads(request.form.get('config', '{}')),
-                "priority": int(request.form.get('priority', 1)),
-                "name": request.form.get('name', f"ChunkedUpload_{timestamp}"),
-                "description": request.form.get('description', ''),
-                "submitted_at": datetime.now().isoformat(),
-                "file_size": file_size,
-                "original_filename": original_filename
+        # Check if it's a chunked upload
+        if 'chunk_number' in request.form:
+            # Handle chunked upload
+            chunk_info = {
+                'chunk_number': int(request.form.get('chunk_number', 0)),
+                'total_chunks': int(request.form.get('total_chunks', 1)),
+                'file_id': request.form.get('file_id', layer_id),
+                'filename': request.form.get('filename', f'{layer_id}.svg')
             }
 
-            job_id = job_queue.add_job(job_data)
+            if 'chunk_data' not in request.files:
+                return jsonify({"error": "No chunk data provided"}), 400
 
-            if plotter_controller.is_idle():
-                threading.Thread(target=process_jobs, daemon=True).start()
+            chunk_file = request.files['chunk_data']
+            chunk_data = chunk_file.read()
 
-            return jsonify({
-                "job_id": job_id,
-                "status": "queued",
-                "position": job_queue.get_position(job_id),
-                "file_size": file_size,
-                "message": "File assembled and job created"
-            }), 201
+            result = project_manager.upload_layer_chunked(layer_id, chunk_data, chunk_info)
+
+            return jsonify(result), 200
+
         else:
+            # Handle direct upload
+            if 'file' not in request.files:
+                return jsonify({"error": "No file provided"}), 400
+
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({"error": "No file selected"}), 400
+
+            # Read file data
+            file_data = file.read()
+
+            # Check file size
+            if len(file_data) > app.config['MAX_CONTENT_LENGTH']:
+                return jsonify({"error": "File too large"}), 413
+
+            # Upload the layer
+            layer_info = project_manager.upload_layer(layer_id, file_data, file.filename)
+
+            logger.info(f"Layer {layer_id} uploaded successfully")
+
             return jsonify({
-                "status": "chunk_received",
-                "chunk": chunk_number,
-                "total_chunks": total_chunks,
-                "uploaded_chunks": uploaded_chunks
+                "message": "Layer uploaded successfully",
+                "layer": layer_info
             }), 200
 
     except Exception as e:
-        logger.error(f"Error handling chunk upload: {str(e)}")
+        logger.error(f"Error uploading layer {layer_id}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/jobs', methods=['GET'])
-def get_jobs():
-    """Get current job status"""
+
+@app.route('/plot/<layer_id>', methods=['POST'])
+def plot_layer(layer_id):
+    """Execute plotting for a specific layer"""
     try:
-        # Return only current job info
+        # Check if project is ready
+        if not project_manager.is_project_ready():
+            return jsonify({"error": "Project not ready for plotting"}), 400
+
+        # Check if plotter is busy
+        with status_lock:
+            if system_status['plotter_status'] != "IDLE":
+                return jsonify({
+                    "error": "Plotter is busy",
+                    "current_status": system_status['plotter_status']
+                }), 409
+
+        # Get layer file path
+        svg_path = project_manager.get_layer_file_path(layer_id)
+        if not svg_path:
+            return jsonify({"error": f"Layer {layer_id} not found"}), 404
+
+        # Get layer info
+        layer_info = project_manager.get_layer_info(layer_id)
+        if not layer_info:
+            return jsonify({"error": f"Layer {layer_id} info not found"}), 404
+
+        # Start plotting in background thread
+        def execute_plot():
+            try:
+                with status_lock:
+                    system_status['plotter_status'] = "PLOTTING"
+                    system_status['current_layer'] = layer_id
+                    system_status['plot_progress'] = 0
+
+                project_manager.update_project_status(ProjectStatus.PLOTTING)
+
+                # Get config overrides from request body
+                config_overrides = request.json if request.json else {}
+
+                # Execute the plot
+                success = plotter_controller.plot_file(
+                    svg_path,
+                    config_overrides=config_overrides,
+                    job_name=f"{project_manager.current_project['name']}_{layer_info['name']}"
+                )
+
+                with status_lock:
+                    if success:
+                        system_status['plotter_status'] = "IDLE"
+                        system_status['plot_progress'] = 100
+                        logger.info(f"Successfully plotted layer {layer_id}")
+                    else:
+                        system_status['plotter_status'] = "ERROR"
+                        system_status['last_error'] = "Plot execution failed"
+                        logger.error(f"Failed to plot layer {layer_id}")
+
+                    system_status['current_layer'] = None
+
+            except Exception as e:
+                logger.error(f"Error executing plot for layer {layer_id}: {str(e)}")
+                with status_lock:
+                    system_status['plotter_status'] = "ERROR"
+                    system_status['last_error'] = str(e)
+                    system_status['current_layer'] = None
+
+        # Start plot thread
+        plot_thread = threading.Thread(target=execute_plot, daemon=True)
+        plot_thread.start()
+
         return jsonify({
-            "current_job": app_status
-        })
+            "message": "Plot started",
+            "layer_id": layer_id,
+            "layer_name": layer_info['name']
+        }), 202
+
     except Exception as e:
-        logger.error(f"Error getting jobs: {str(e)}")
+        logger.error(f"Error starting plot for layer {layer_id}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# Removed job details endpoint as there is no longer a job queue
 
-# Removed job cancel endpoint as there is no longer a job queue
-
-@app.route('/pause', methods=['POST'])
-def pause_plotting():
-    """Pause current plotting job"""
+@app.route('/plot/stop', methods=['POST'])
+def stop_plot():
+    """Stop current plotting operation"""
     try:
-        if plotter_controller.pause():
-            update_status("PAUSED", app_status.get("job_info"))
-            return jsonify({"message": "Plotting paused"})
-        else:
-            return jsonify({"error": "No active job to pause"}), 400
+        success = plotter_controller.stop_plotting()
+
+        with status_lock:
+            if success:
+                system_status['plotter_status'] = "IDLE"
+                system_status['current_layer'] = None
+                system_status['plot_progress'] = 0
+
+        return jsonify({
+            "message": "Plot stopped" if success else "Failed to stop plot",
+            "success": success
+        }), 200 if success else 500
+
     except Exception as e:
-        logger.error(f"Error pausing: {str(e)}")
+        logger.error(f"Error stopping plot: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/resume', methods=['POST'])
-def resume_plotting():
-    """Resume paused plotting job"""
+
+@app.route('/plot/pause', methods=['POST'])
+def pause_plot():
+    """Pause current plotting operation"""
     try:
-        logger.info("Request to resume plot received")
+        success = plotter_controller.pause_plotting()
 
-        # Check if there's a paused job
-        if not plotter_controller.is_paused:
-            return jsonify({"error": "No paused job to resume"}), 400
+        with status_lock:
+            if success:
+                system_status['plotter_status'] = "PAUSED"
 
-        # Attempt to resume the plot
-        if plotter_controller.resume():
-            # Update application status
-            update_status("PLOTTING", app_status.get("job_info"))
-            logger.info("Plot resumed successfully")
+        return jsonify({
+            "message": "Plot paused" if success else "Failed to pause plot",
+            "success": success
+        }), 200 if success else 500
 
-            # Successful resume
-            return jsonify({"message": "Plotting resumed"})
-        else:
-            logger.error("Resume failed: No valid resume data available")
-            return jsonify({"error": "Failed to resume plotting. No valid resume data available"}), 400
     except Exception as e:
-        logger.error(f"Error resuming: {str(e)}")
+        logger.error(f"Error pausing plot: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/stop', methods=['POST'])
-def stop_plotting():
-    """Stop current plotting job"""
-    print("Stopping plotting job")
+
+@app.route('/plot/resume', methods=['POST'])
+def resume_plot():
+    """Resume paused plotting operation"""
     try:
-        if plotter_controller.stop():
-            update_status("IDLE", None)
-            return jsonify({"message": "Plotting stopped"})
-        else:
-            print("No active job to stop")
-            return jsonify({"error": "No active job to stop"}), 400
+        success = plotter_controller.resume_plotting()
+
+        with status_lock:
+            if success:
+                system_status['plotter_status'] = "PLOTTING"
+
+        return jsonify({
+            "message": "Plot resumed" if success else "Failed to resume plot",
+            "success": success
+        }), 200 if success else 500
+
     except Exception as e:
-        logger.error(f"Error stopping: {str(e)}")
+        logger.error(f"Error resuming plot: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/project', methods=['DELETE'])
+def clear_project():
+    """Clear current project from memory"""
+    try:
+        # Check if plotter is busy
+        with status_lock:
+            if system_status['plotter_status'] == "PLOTTING":
+                return jsonify({"error": "Cannot clear project while plotting"}), 409
+
+        success = project_manager.clear_project()
+
+        if success:
+            logger.info("Project cleared successfully")
+            return jsonify({"message": "Project cleared"}), 200
+        else:
+            return jsonify({"message": "No project to clear"}), 404
+
+    except Exception as e:
+        logger.error(f"Error clearing project: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/config', methods=['GET'])
 def get_config():
-    """Get current configuration"""
+    """Get current plotter configuration"""
     try:
-        return jsonify(config_manager.get_current_config())
+        config = config_manager.get_all_config()
+        return jsonify(config), 200
     except Exception as e:
         logger.error(f"Error getting config: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+
 @app.route('/config', methods=['PUT'])
 def update_config():
-    """Update configuration"""
+    """Update plotter configuration"""
     try:
-        data = request.get_json()
+        data = request.json
         if not data:
             return jsonify({"error": "No configuration data provided"}), 400
 
         config_manager.update_config(data)
-        return jsonify({"message": "Configuration updated"})
+
+        return jsonify({
+            "message": "Configuration updated",
+            "config": config_manager.get_all_config()
+        }), 200
+
     except Exception as e:
         logger.error(f"Error updating config: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/config/reset', methods=['POST'])
-def reset_config():
-    """Reset configuration to defaults"""
-    try:
-        config_manager.reset_to_defaults()
-        return jsonify({"message": "Configuration reset to defaults"})
-    except Exception as e:
-        logger.error(f"Error resetting config: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/utility/<command>', methods=['POST'])
@@ -476,76 +390,37 @@ def utility_command(command):
         logger.error(f"Error executing utility command {command}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/update', methods=['POST'])
-def trigger_update():
-    """Trigger remote update"""
-    try:
-        data = request.get_json() or {}
-        branch = data.get('branch', 'main')
-        force = data.get('force', False)
-
-        if not plotter_controller.is_idle():
-            return jsonify({"error": "Cannot update while plotting"}), 400
-
-        result = update_manager.update(branch, force)
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"Error during update: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/logs', methods=['GET'])
-def get_logs():
-    """Get recent log entries"""
-    try:
-        lines = request.args.get('lines', 100, type=int)
-        log_file = 'logs/app.log'
-
-        if not os.path.exists(log_file):
-            return jsonify({"logs": []})
-
-        with open(log_file, 'r') as f:
-            logs = f.readlines()
-
-        # Return last N lines
-        recent_logs = logs[-lines:] if len(logs) > lines else logs
-        return jsonify({"logs": [log.strip() for log in recent_logs]})
-    except Exception as e:
-        logger.error(f"Error getting logs: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-# Process jobs function removed - direct execution implemented in submit functions
-
+# Error handlers
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({"error": "Endpoint not found"}), 404
 
-@app.errorhandler(413)
+
+@app.errorhandler(RequestEntityTooLarge)
 def request_entity_too_large(error):
     return jsonify({
         "error": "File too large",
-        "max_size": "500MB",
-        "suggestion": "Use chunked upload endpoint /plot/chunk for very large files"
+        "max_size_mb": app.config['MAX_CONTENT_LENGTH'] / (1024 * 1024)
     }), 413
+
 
 @app.errorhandler(500)
 def internal_error(error):
+    logger.error(f"Internal server error: {str(error)}")
     return jsonify({"error": "Internal server error"}), 500
 
+
+# Update plotter progress callback
+def update_plot_progress(progress):
+    """Callback to update plot progress"""
+    with status_lock:
+        system_status['plot_progress'] = progress
+
+
+# Set the progress callback
+plotter_controller.set_progress_callback(update_plot_progress)
+
+
 if __name__ == '__main__':
-    logger.info("Starting NextDraw Plotter API Server")
-
-    # Initialize plotter connection
-    try:
-        plotter_controller.initialize()
-        update_status("IDLE")
-    except Exception as e:
-        logger.error(f"Failed to initialize plotter: {str(e)}")
-        update_status("ERROR", None, f"Plotter initialization failed: {str(e)}")
-
-    # Start the Flask app
-    app.run(
-        host='0.0.0.0',
-        port=5000,
-        debug=False,
-        threaded=True
-    )
+    logger.info("Starting NextDraw Plotter API Server (Project-Based)")
+    app.run(host='0.0.0.0', port=5000, debug=False)
