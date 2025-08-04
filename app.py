@@ -419,6 +419,27 @@ def utility_command(command):
         logger.error(f"Error executing utility command {command}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/logs', methods=['GET'])
+def get_logs():
+    """Get recent log entries"""
+    try:
+        lines = request.args.get('lines', 100, type=int)
+        log_file = 'logs/app.log'
+
+        if not os.path.exists(log_file):
+            return jsonify({"logs": []})
+
+        with open(log_file, 'r') as f:
+            logs = f.readlines()
+
+        # Return last N lines
+        recent_logs = logs[-lines:] if len(logs) > lines else logs
+        return jsonify({"logs": [log.strip() for log in recent_logs]})
+    except Exception as e:
+        logger.error(f"Error getting logs: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 # Error handlers
 @app.errorhandler(404)
 def not_found(error):
