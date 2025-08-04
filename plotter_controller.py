@@ -100,11 +100,19 @@ class PlotterController:
         if not self.nextdraw:
             return
 
-        # Apply general options
-        for key, value in config.get('plotter_settings', {}).items():
-            if hasattr(self.nextdraw.options, key):
-                setattr(self.nextdraw.options, key, value)
-                logger.debug(f"Set {key} = {value}")
+        # If config is in the new JSON format (has direct parameters at root level)
+        if isinstance(config, dict) and 'name' in config and 'plotter_settings' not in config:
+            # Apply new JSON format directly
+            for key, value in config.items():
+                if key != 'name' and hasattr(self.nextdraw.options, key):
+                    setattr(self.nextdraw.options, key, value)
+                    logger.debug(f"Set {key} = {value}")
+        else:
+            # Apply old format (with plotter_settings)
+            for key, value in config.get('plotter_settings', {}).items():
+                if hasattr(self.nextdraw.options, key):
+                    setattr(self.nextdraw.options, key, value)
+                    logger.debug(f"Set {key} = {value}")
 
     def _get_plotter_info(self):
         """Get plotter information and store in config"""
@@ -497,11 +505,21 @@ class PlotterController:
             logger.error(f"Utility command failed: {str(e)}")
             return {"error": str(e)}
 
+
+
     def _apply_config_to_instance(self, nd_instance, config):
         """Apply configuration to a NextDraw instance"""
-        for key, value in config.get('plotter_settings', {}).items():
-            if hasattr(nd_instance.options, key):
-                setattr(nd_instance.options, key, value)
+        # If config is in the new JSON format (has direct parameters at root level)
+        if isinstance(config, dict) and 'name' in config and 'plotter_settings' not in config:
+            # Apply new JSON format directly
+            for key, value in config.items():
+                if key != 'name' and hasattr(nd_instance.options, key):
+                    setattr(nd_instance.options, key, value)
+        else:
+            # Apply old format (with plotter_settings)
+            for key, value in config.get('plotter_settings', {}).items():
+                if hasattr(nd_instance.options, key):
+                    setattr(nd_instance.options, key, value)
 
     def get_status(self):
         """Get current plotter status"""

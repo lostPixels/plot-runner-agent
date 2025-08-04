@@ -94,33 +94,6 @@ def get_status():
         logger.error(f"Error getting status: {str(e)}")
         return jsonify({"error": "Failed to get status"}), 500
 
-
-# @app.route('/project', methods=['POST'])
-# def create_new_project():
-#     """Create a new project, clearing any existing project"""
-#     print('Create new project')
-#     try:
-#         data = request.json
-#         if not data:
-#             return jsonify({"error": "No project data provided"}), 400
-
-#         # No specific validation needed - just project name is optional
-
-#         # Create the project
-#         project_info = project_manager.create_project(data)
-
-#         logger.info(f"Created new project: {project_info['id']}")
-
-#         return jsonify({
-#             "message": "Project created successfully",
-#             "project": project_info
-#         }), 201
-
-#     except Exception as e:
-#         logger.error(f"Error creating project: {str(e)}")
-#         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/project', methods=['POST'])
 def create_project():
     """Create a new project, clearing any existing project"""
@@ -240,8 +213,13 @@ def plot_layer(layer_name):
         if not svg_path:
             return jsonify({"error": "No SVG file uploaded"}), 404
 
-        # Get config overrides from request body
-        config_overrides = request.json if request.json else {}
+        # Get config from request body
+        config_overrides = {}
+        if request.json:
+            config_overrides = request.json.get('config', {})
+            logger.info(f"Received config with {len(config_overrides)} parameters")
+
+        logger.info(f"Received request to plot {svg_name}")
 
         # Start plotting in background thread
         def execute_plot():
