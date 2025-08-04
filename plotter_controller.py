@@ -9,6 +9,7 @@ import threading
 from datetime import datetime
 import logging
 from nextdraw import NextDraw
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +137,6 @@ class PlotterController:
             # Initialize NextDraw for plotting
             self.nextdraw = NextDraw()
 
-            # Apply base configuration
-            #config = self.config_manager.get_current_config()
-            #self._apply_config(config)
 
             # Apply job-specific config overrides
             job_config = job_data.get('config_overrides', {})
@@ -156,12 +154,27 @@ class PlotterController:
                 return {"success": False, "error": "No valid SVG content or file provided"}
 
 
-            print(job_config)
+            # Apply job-specific config overrides
+
+            # Log the type of job_config
+
+            job_config = json.loads(job_config)
+
             if isinstance(job_config, dict):
-                # If config is in the new JSON format (has direct parameters at root level)
+                # Iterate through the JSON configuration
                 for key, value in job_config.items():
-                    if key != 'name':
+                    if isinstance(value, dict):
+                        # If value is a nested dictionary, process its items
+                        for sub_key, sub_value in value.items():
+                            if sub_key != 'name':
+                                print(f"Setting option {sub_key} = {sub_value}")
+                                setattr(self.nextdraw.options, sub_key, sub_value)
+                    else:
+                        # Handle direct key-value pairs
+                        print(f"Setting option {key} = {value}")
                         setattr(self.nextdraw.options, key, value)
+
+            self.nextdraw.update()
 
             # Handle start_mm parameter for resume plotting
             start_mm = job_data.get('start_mm')
