@@ -232,8 +232,16 @@ def plot_layer(layer_name):
 
         # Get SVG file path
         svg_path = project_manager.get_svg_file_path()
+        svg_name = project_manager.get_original_svg_file_name()
+        request_svg_name = request.form.get('svg_name') #Check whether the requested SVG is the same as the uploaded one
+        if request_svg_name != svg_name:
+            return jsonify({"error": "Requested SVG is not the same as the uploaded one. Try Syncing."}), 400
+
         if not svg_path:
             return jsonify({"error": "No SVG file uploaded"}), 404
+
+        # Get config overrides from request body
+        config_overrides = request.json if request.json else {}
 
         # Start plotting in background thread
         def execute_plot():
@@ -244,9 +252,6 @@ def plot_layer(layer_name):
                     system_status['plot_progress'] = 0
 
                 project_manager.update_project_status(ProjectStatus.PLOTTING)
-
-                # Get config overrides from request body
-                config_overrides = request.json if request.json else {}
 
                 # Execute the plot
                 success = plotter_controller.plot_file(

@@ -275,6 +275,13 @@ class ProjectManager:
                 return None
             return self.current_project.get('svg_file')
 
+    def get_original_svg_file_name(self) -> Optional[str]:
+        """Get the original SVG file name for the current project"""
+        with self.project_lock:
+            if not self.current_project:
+                return None
+            return self.current_project.get('original_svg_file_name')
+
     def get_available_layers(self) -> List[Dict[str, str]]:
         """Get list of available layers in the SVG"""
         with self.project_lock:
