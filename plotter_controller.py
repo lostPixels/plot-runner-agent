@@ -9,28 +9,6 @@ import threading
 from datetime import datetime
 import logging
 from nextdraw import NextDraw
-# try:
-#     from nextdraw import NextDraw
-# except ImportError:
-#     # For development/testing when NextDraw library is not available
-#     class NextDrawOptions:
-#         def __init__(self):
-#             self.mode = None
-#             self.utility_cmd = None
-#             self.dist = 0.0
-#     class NextDraw:
-#         def __init__(self):
-#             self.options = NextDrawOptions()
-#         def plot_setup(self, *args, **kwargs):
-#             pass
-#         def plot_run(self, *args, **kwargs):
-#             return True
-#         def interactive(self):
-#             pass
-#         def connect(self):
-#             return True
-#         def disconnect(self):
-#             pass
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +50,8 @@ class PlotterController:
                 self.nextdraw = NextDraw()
 
                 # Load configuration
-                config = self.config_manager.get_current_config()
-                self._apply_config(config)
+                # config = self.config_manager.get_current_config()
+                # self._apply_config(config)
 
                 # Test connection in interactive mode
                 self.nextdraw.interactive()
@@ -100,8 +78,13 @@ class PlotterController:
         if not self.nextdraw:
             return
 
+        # Ensure config is a dictionary
+        if not isinstance(config, dict):
+            logger.warning(f"Config is not a dictionary: {type(config)}")
+            return
+
         # If config is in the new JSON format (has direct parameters at root level)
-        if isinstance(config, dict) and 'name' in config and 'plotter_settings' not in config:
+        if 'name' in config and 'plotter_settings' not in config:
             # Apply new JSON format directly
             for key, value in config.items():
                 if key != 'name' and hasattr(self.nextdraw.options, key):
@@ -154,15 +137,12 @@ class PlotterController:
             self.nextdraw = NextDraw()
 
             # Apply base configuration
-            config = self.config_manager.get_current_config()
-            self._apply_config(config)
+            #config = self.config_manager.get_current_config()
+            #self._apply_config(config)
 
             # Apply job-specific config overrides
             job_config = job_data.get('config_overrides', {})
-            for key, value in job_config.items():
-                if hasattr(self.nextdraw.options, key):
-                    setattr(self.nextdraw.options, key, value)
-                    logger.debug(f"Job override: {key} = {value}")
+
 
             # Setup plot
             svg_content = job_data.get('svg_content')
@@ -174,6 +154,14 @@ class PlotterController:
                 self.nextdraw.plot_setup(svg_file)
             else:
                 return {"success": False, "error": "No valid SVG content or file provided"}
+
+
+            print(job_config)
+            if isinstance(job_config, dict):
+                # If config is in the new JSON format (has direct parameters at root level)
+                for key, value in job_config.items():
+                    if key != 'name':
+                        setattr(self.nextdraw.options, key, value)
 
             # Handle start_mm parameter for resume plotting
             start_mm = job_data.get('start_mm')
@@ -338,9 +326,10 @@ class PlotterController:
 
                 # Apply any job-specific config overrides
                 job_config = self.current_job.get('config_overrides', {})
-                for key, value in job_config.items():
-                    if hasattr(self.nextdraw.options, key):
-                        setattr(self.nextdraw.options, key, value)
+                if isinstance(job_config, dict):
+                    for key, value in job_config.items():
+                        if hasattr(self.nextdraw.options, key):
+                            setattr(self.nextdraw.options, key, value)
 
                 # Update NextDraw with new configuration
                 if hasattr(self.nextdraw, 'update'):
@@ -509,17 +498,21 @@ class PlotterController:
 
     def _apply_config_to_instance(self, nd_instance, config):
         """Apply configuration to a NextDraw instance"""
+        # Ensure config is a dictionary
+        if not isinstance(config, dict):
+            logger.warning(f"Config is not a dictionary: {type(config)}")
+            return
+
         # If config is in the new JSON format (has direct parameters at root level)
-        if isinstance(config, dict) and 'name' in config and 'plotter_settings' not in config:
+        if 'name' in config and 'plotter_settings' not in config:
             # Apply new JSON format directly
             for key, value in config.items():
-                if key != 'name' and hasattr(nd_instance.options, key):
+                if key != 'name':
                     setattr(nd_instance.options, key, value)
         else:
             # Apply old format (with plotter_settings)
             for key, value in config.get('plotter_settings', {}).items():
-                if hasattr(nd_instance.options, key):
-                    setattr(nd_instance.options, key, value)
+                setattr(nd_instance.options, key, value)
 
     def get_status(self):
         """Get current plotter status"""

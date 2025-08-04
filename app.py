@@ -216,7 +216,7 @@ def plot_layer(layer_name):
         # Get config from request body
         config_overrides = {}
         if request.json:
-            config_overrides = request.json.get('config', {})
+            config_overrides = request.json.get('config_content', {})
             logger.info(f"Received config with {len(config_overrides)} parameters")
 
         logger.info(f"Received request to plot {svg_name}")
