@@ -298,7 +298,7 @@ def plot_layer(layer_name):
 def stop_plot():
     """Stop current plotting operation"""
     try:
-        success = plotter_controller.stop_plotting()
+        success = plotter_controller.stop()
 
         with status_lock:
             if success:
@@ -320,7 +320,7 @@ def stop_plot():
 def pause_plot():
     """Pause current plotting operation"""
     try:
-        success = plotter_controller.pause_plotting()
+        success = plotter_controller.pause()
 
         with status_lock:
             if success:
@@ -340,7 +340,7 @@ def pause_plot():
 def resume_plot():
     """Resume paused plotting operation"""
     try:
-        success = plotter_controller.resume_plotting()
+        success = plotter_controller.resume()
 
         with status_lock:
             if success:
