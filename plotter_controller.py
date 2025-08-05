@@ -16,8 +16,7 @@ logger = logging.getLogger(__name__)
 class PlotterController:
     """Controls NextDraw plotter operations"""
 
-    def __init__(self, config_manager):
-        self.config_manager = config_manager
+    def __init__(self):
         self.nextdraw = None
         self.status = "DISCONNECTED"
         self.current_job = None
@@ -49,10 +48,6 @@ class PlotterController:
             with self.lock:
                 logger.info("Initializing NextDraw plotter...")
                 self.nextdraw = NextDraw()
-
-                # Load configuration
-                # config = self.config_manager.get_current_config()
-                # self._apply_config(config)
 
                 # Test connection in interactive mode
                 self.nextdraw.interactive()
@@ -108,14 +103,17 @@ class PlotterController:
                     "nickname": getattr(self.nextdraw, 'nickname', ''),
                     "last_updated": datetime.now().isoformat()
                 }
-                self.config_manager.update_plotter_info(info)
+
         except Exception as e:
             logger.warning(f"Could not get plotter info: {str(e)}")
 
     def draw_bullseye(self):
         """Draw a bullseye pattern on the plotter"""
+        config = json.loads("bullseye-helper\/bullseyeconfig.json")
+        print(config)
         opts = {
-            "svg_file": "bullseye.svg"
+            "config_overrides": config,
+            "svg_file": "bullseye-helper/bullseye.svg"
         }
         self.execute_job(opts)
 
@@ -153,11 +151,6 @@ class PlotterController:
             else:
                 return {"success": False, "error": "No valid SVG content or file provided"}
 
-
-            # Apply job-specific config overrides
-
-            # Log the type of job_config
-
             job_config = json.loads(job_config)
 
             if isinstance(job_config, dict):
@@ -167,14 +160,21 @@ class PlotterController:
                         # If value is a nested dictionary, process its items
                         for sub_key, sub_value in value.items():
                             if sub_key != 'name':
-                                print(f"Setting option {sub_key} = {sub_value}")
+                                #print(f"Setting option {sub_key} = {sub_value}")
                                 setattr(self.nextdraw.options, sub_key, sub_value)
                     else:
                         # Handle direct key-value pairs
-                        print(f"Setting option {key} = {value}")
+                        #print(f"Setting option {key} = {value}")
                         setattr(self.nextdraw.options, key, value)
 
+            layer = job_data.get('layer_name', 'all')
+            if layer != "all":
+                    self.nextdraw.options.mode = "layers"
+                    self.nextdraw.options.layer = int(layer)
+
             self.nextdraw.update()
+
+            print("self.nextdraw.options",self.nextdraw.options)
 
             # Handle start_mm parameter for resume plotting
             start_mm = job_data.get('start_mm')
@@ -308,10 +308,6 @@ class PlotterController:
                 if not self.nextdraw:
                     self.nextdraw = NextDraw()
 
-                # Get current configuration
-                config = self.config_manager.get_current_config()
-                self._apply_config(config)
-
                 # Prepare NextDraw for resuming
                 if not self.nextdraw:
                     logger.error("No NextDraw instance available for resuming")
@@ -432,8 +428,6 @@ class PlotterController:
 
             # Initialize for utility mode
             nd = NextDraw()
-            config = self.config_manager.get_current_config()
-            self._apply_config_to_instance(nd, config)
 
             nd.plot_setup()
             nd.options.mode = "utility"
@@ -489,6 +483,10 @@ class PlotterController:
                 nd.options.mode = "sysinfo"
                 result = nd.plot_run()
                 return {"success": True, "info": result}
+            elif command == "disable_motors":
+                nd.options.mode = "disable_xy"
+                result = nd.plot_run()
+                return {"success": True, "message": "Motors disabled"}
 
             elif command == "go_to_limit":
                 # Go to plotter limit
@@ -563,16 +561,12 @@ class PlotterController:
             if not os.path.exists(svg_path):
                 return {"success": False, "error": f"SVG file not found: {svg_path}"}
 
-            # If a specific layer is requested, we'll need to filter the SVG
-            # For now, pass the full file to execute_job
-            # TODO: Add layer filtering logic if layer_name is provided
-
             # Prepare job data
             job_data = {
                 'svg_file': svg_path,
                 'name': job_name or f'Plot_{int(time.time())}',
                 'config_overrides': config_overrides or {},
-                'layer_name': layer_name  # Store for potential future use
+                'layer_name': layer_name
             }
 
             # Execute the job

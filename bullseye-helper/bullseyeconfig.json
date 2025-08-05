@@ -1,0 +1,16 @@
+{
+    "name": "Stock Kakuno Config",
+    "speed_pendown": 22,
+    "speed_penup": 75,
+    "accel": 45,
+    "pen_pos_up": 58,
+    "pen_pos_down": 35,
+    
+    "pen_rate_lower": 38,
+    "pen_rate_raise": 55,
+    
+    "handling": 1,
+    "model": 10,
+    "penlift": 3,
+    "reordering": 4
+}

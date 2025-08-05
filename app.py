@@ -15,7 +15,6 @@ from logging.handlers import RotatingFileHandler
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from plotter_controller import PlotterController
-from config_manager import ConfigManager
 from project_manager import ProjectManager, ProjectStatus
 
 # Initialize Flask app
@@ -42,8 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize core components
-config_manager = ConfigManager()
-plotter_controller = PlotterController(config_manager)
+plotter_controller = PlotterController()
 project_manager = ProjectManager()
 
 # Global system status
@@ -236,7 +234,7 @@ def plot_layer(layer_name):
                     svg_path,
                     config_overrides=config_overrides,
                     job_name=f"{project_manager.current_project['name']}_{layer_name}",
-                    layer_name=layer_name if layer_name != 'all' else None
+                    layer_name=layer_name
                 )
 
                 with status_lock:
@@ -356,35 +354,8 @@ def clear_project():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/config', methods=['GET'])
-def get_config():
-    """Get current plotter configuration"""
-    try:
-        config = config_manager.get_all_config()
-        return jsonify(config), 200
-    except Exception as e:
-        logger.error(f"Error getting config: {str(e)}")
-        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/config', methods=['PUT'])
-def update_config():
-    """Update plotter configuration"""
-    try:
-        data = request.json
-        if not data:
-            return jsonify({"error": "No configuration data provided"}), 400
-
-        config_manager.update_config(data)
-
-        return jsonify({
-            "message": "Configuration updated",
-            "config": config_manager.get_all_config()
-        }), 200
-
-    except Exception as e:
-        logger.error(f"Error updating config: {str(e)}")
-        return jsonify({"error": str(e)}), 500
 
 @app.route('/utility/<command>', methods=['POST'])
 def utility_command(command):
