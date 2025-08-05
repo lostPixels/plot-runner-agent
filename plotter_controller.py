@@ -109,8 +109,8 @@ class PlotterController:
 
     def draw_bullseye(self):
         """Draw a bullseye pattern on the plotter"""
-        config = json.loads("bullseye-helper\/bullseyeconfig.json")
-        print(config)
+        with open("bullseye-helper/bullseyeconfig.json", "r") as file:
+            config = json.load(file)
         opts = {
             "config_overrides": config,
             "svg_file": "bullseye-helper/bullseye.svg"
@@ -151,7 +151,9 @@ class PlotterController:
             else:
                 return {"success": False, "error": "No valid SVG content or file provided"}
 
-            job_config = json.loads(job_config)
+            # Check if job_config is already a dict, if not, try to parse it from JSON
+            if not isinstance(job_config, dict) and isinstance(job_config, str):
+                job_config = json.loads(job_config)
 
             if isinstance(job_config, dict):
                 # Iterate through the JSON configuration
