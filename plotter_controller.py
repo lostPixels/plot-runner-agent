@@ -507,8 +507,6 @@ class PlotterController:
             logger.error(f"Utility command failed: {str(e)}")
             return {"error": str(e)}
 
-
-
     def _apply_config_to_instance(self, nd_instance, config):
         """Apply configuration to a NextDraw instance"""
         # Ensure config is a dictionary

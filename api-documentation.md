@@ -1,6 +1,6 @@
-# NextDraw Plotter API Documentation
+# NextDraw Plotter API Documentation (Simplified)
 
-This document provides comprehensive details about the REST API endpoints available in the NextDraw Plotter API Server. Use this information to build a UI that interacts with the plotter system.
+This document provides comprehensive details about the REST API endpoints available in the simplified NextDraw Plotter API Server. This version removes the concept of projects and works with a single current SVG file.
 
 ## Base URL
 
@@ -12,16 +12,27 @@ http://<server-ip>:5000
 
 ## Authentication
 
-The API currently doesn't implement authentication. If you're implementing a UI that connects to this API, you should consider network-level security measures.
+The API currently doesn't implement authentication. If you're implementing a UI that connects to this API, consider network-level security measures.
 
 ## Status Codes
 
 - `200 OK`: Request succeeded
-- `201 Created`: Resource successfully created
+- `202 Accepted`: Request accepted for processing
 - `400 Bad Request`: Invalid request parameters
 - `404 Not Found`: Resource not found
-- `413 Payload Too Large`: Request entity too large
+- `409 Conflict`: Operation conflicts with current state
+- `413 Payload Too Large`: Request entity too large (max 500MB)
 - `500 Internal Server Error`: Server error
+
+## Core Concepts
+
+### Single SVG Workflow
+
+The simplified API works with a single current SVG file at a time. When you upload a new SVG, it replaces any existing one. The SVG can contain multiple layers that can be plotted individually.
+
+### Layer Support
+
+SVG files can contain multiple layers (Inkscape layers or SVG groups). Each layer can be plotted individually by specifying its name in the plot endpoint.
 
 ## Endpoints
 
@@ -37,7 +48,8 @@ Check if the API server is running.
 {
     "status": "healthy",
     "timestamp": "2023-08-01T12:00:00.000000",
-    "version": "1.0.0"
+    "version": "3.0.0",
+    "uptime_start": "2023-08-01T10:00:00.000000"
 }
 ```
 
@@ -45,359 +57,310 @@ Check if the API server is running.
 
 #### `GET /status`
 
-Get the current status of the plotter system.
+Get the current status of the plotter system and current SVG.
 
 **Response:**
 
 ```json
 {
-    "plotter": {
-        "status": "IDLE",
-        "connected": true,
-        "port": "/dev/ttyUSB0",
-        "model": "AxiDraw V3"
+    "timestamp": "2023-08-01T12:00:00.000000",
+    "system": {
+        "plotter_status": "IDLE",
+        "current_layer": null,
+        "plot_progress": 0,
+        "last_error": null
     },
-    "queue": {
-        "count": 2,
-        "active": false,
-        "pending_jobs": ["job1", "job2"]
-    },
-    "app": {
-        "status": "IDLE",
-        "current_job": null,
-        "error_message": null,
-        "last_updated": "2023-08-01T12:00:00.000000",
-        "uptime_start": "2023-08-01T10:00:00.000000"
-    },
-    "config": {
-        // Current configuration (see Configuration section)
+    "svg": {
+        "id": "svg_1234567890_abcd1234",
+        "file_size": 1048576,
+        "upload_progress": 100,
+        "original_filename": "my_design.svg",
+        "uploaded_at": "2023-08-01T11:30:00.000000",
+        "available_layers": [
+            {
+                "id": "layer1",
+                "name": "Cut Layer"
+            },
+            {
+                "id": "layer2",
+                "name": "Engrave Layer"
+            }
+        ],
+        "is_ready": true
     }
 }
 ```
 
-### Plot Submission
+**Plotter Status Values:**
 
-#### `POST /plot`
+- `IDLE`: Ready to accept commands
+- `PLOTTING`: Currently plotting
+- `PAUSED`: Plot is paused
+- `ERROR`: Error state
 
-Submit a new plot job. Accepts both JSON and multipart/form-data formats.
+### SVG Management
 
-**JSON Request Body:**
+#### `POST /api/svg`
 
-```json
-{
-    "svg_content": "<svg>...</svg>", // SVG content as string (alternative to svg_file)
-    "svg_file": "/path/to/file.svg", // Path to SVG file (alternative to svg_content)
-    "config": {
-        // Optional config overrides for this job
-        "speed_pendown": 20,
-        "speed_penup": 75
-    },
-    "priority": 1, // Optional priority (lower number = higher priority)
-    "name": "My Plot Job", // Optional job name
-    "description": "Test plot", // Optional description
-    "start_mm": 10.5 // Optional starting position in mm
-}
+Upload a new SVG file. This replaces any existing SVG.
+
+**Direct Upload (for files < 500MB):**
+
+**Request:**
+
+- Method: `POST`
+- Content-Type: `multipart/form-data`
+- Body:
+    - `file`: The SVG file to upload
+
+**Example (curl):**
+
+```bash
+curl -X POST -F "file=@my_design.svg" http://localhost:5000/api/svg
 ```
-
-**Multipart Form Data:**
-
-- `svg_file`: SVG file to upload
-- `config`: JSON string of configuration overrides
-- `priority`: Job priority (integer)
-- `name`: Job name
-- `description`: Job description
-- `start_mm`: Starting position in mm
-
-**Response (201 Created):**
-
-```json
-{
-    "job_id": "job_1234567890",
-    "status": "queued",
-    "position": 1
-}
-```
-
-#### `POST /plot/upload`
-
-Dedicated endpoint for large file uploads. Uses the same parameters as the multipart form data in `/plot`.
-
-**Response (201 Created):**
-
-```json
-{
-    "job_id": "job_1234567890",
-    "status": "queued",
-    "position": 1,
-    "file_size": 1024000,
-    "uploaded_filename": "1628450000_myfile.svg"
-}
-```
-
-#### `POST /plot/chunk`
-
-Handle chunked uploads for very large files.
-
-**Multipart Form Data:**
-
-- `chunk_data`: The chunk file data
-- `chunk`: Chunk number (integer, 0-based)
-- `total_chunks`: Total number of chunks (integer)
-- `file_id`: Unique identifier for the file being uploaded
-- `filename`: Original filename
-- `config`: JSON string of configuration overrides (on last chunk)
-- `priority`: Job priority (integer, on last chunk)
-- `name`: Job name (on last chunk)
-- `description`: Job description (on last chunk)
-
-**Response for in-progress upload (200 OK):**
-
-```json
-{
-    "status": "chunk_received",
-    "chunk": 1,
-    "total_chunks": 5,
-    "uploaded_chunks": 2
-}
-```
-
-**Response for completed upload (201 Created):**
-
-```json
-{
-    "job_id": "job_1234567890",
-    "status": "queued",
-    "position": 1,
-    "file_size": 1024000,
-    "message": "File assembled and job created"
-}
-```
-
-### Job Management
-
-#### `GET /jobs`
-
-Get a list of all jobs.
 
 **Response:**
 
 ```json
-[
-    {
-        "id": "job_1234567890",
-        "name": "My Plot Job",
-        "description": "Test plot",
-        "status": "queued",
-        "submitted_at": "2023-08-01T12:00:00.000000",
-        "priority": 1,
-        "position": 1
-    },
-    {
-        "id": "job_0987654321",
-        "name": "Another Job",
-        "description": "Another test",
-        "status": "completed",
-        "submitted_at": "2023-08-01T11:00:00.000000",
-        "completed_at": "2023-08-01T11:30:00.000000",
-        "priority": 2
+{
+    "message": "SVG uploaded successfully",
+    "svg": {
+        "id": "svg_1234567890_abcd1234",
+        "file_size": 1048576,
+        "upload_progress": 100,
+        "original_filename": "my_design.svg",
+        "uploaded_at": "2023-08-01T11:30:00.000000",
+        "available_layers": [
+            {
+                "id": "layer1",
+                "name": "Cut Layer"
+            }
+        ],
+        "is_ready": true
     }
-]
-```
-
-#### `GET /jobs/<job_id>`
-
-Get details for a specific job.
-
-**Response:**
-
-```json
-{
-    "id": "job_1234567890",
-    "name": "My Plot Job",
-    "description": "Test plot",
-    "status": "in_progress",
-    "submitted_at": "2023-08-01T12:00:00.000000",
-    "started_at": "2023-08-01T12:05:00.000000",
-    "progress": 75,
-    "priority": 1,
-    "config_overrides": {
-        "speed_pendown": 20
-    },
-    "file_size": 102400,
-    "original_filename": "myplot.svg"
 }
 ```
 
-#### `DELETE /jobs/<job_id>`
+**Chunked Upload (for large files):**
 
-Cancel a job.
+For files larger than a few MB, use chunked upload to provide progress feedback.
 
-**Response:**
+**Request:**
 
-```json
-{
-    "message": "Job cancelled"
+- Method: `POST`
+- Content-Type: `multipart/form-data`
+- Form fields:
+    - `chunk_number`: Current chunk index (0-based)
+    - `total_chunks`: Total number of chunks
+    - `file_id`: Unique identifier for this upload session
+    - `filename`: Original filename
+    - `chunk_data`: The chunk data file
+
+**Example (JavaScript):**
+
+```javascript
+const chunkSize = 1024 * 1024; // 1MB chunks
+const totalChunks = Math.ceil(file.size / chunkSize);
+
+for (let i = 0; i < totalChunks; i++) {
+    const chunk = file.slice(i * chunkSize, (i + 1) * chunkSize);
+    const formData = new FormData();
+    formData.append("chunk_number", i);
+    formData.append("total_chunks", totalChunks);
+    formData.append("file_id", "upload_" + Date.now());
+    formData.append("filename", file.name);
+    formData.append("chunk_data", chunk);
+
+    await fetch("/api/svg", {
+        method: "POST",
+        body: formData,
+    });
 }
 ```
 
-### Plotter Control
-
-#### `POST /pause`
-
-Pause the current plotting job.
-
-**Response:**
+**Response (for each chunk):**
 
 ```json
 {
-    "message": "Plotting paused"
+    "progress": 50,
+    "chunks_received": 5,
+    "total_chunks": 10
 }
 ```
 
-#### `POST /resume`
+#### `GET /api/svg`
 
-Resume a paused plotting job.
-
-**Response:**
-
-```json
-{
-    "message": "Plotting resumed"
-}
-```
-
-#### `POST /stop`
-
-Stop the current plotting job.
+Get the status of the currently loaded SVG.
 
 **Response:**
 
 ```json
 {
-    "message": "Plotting stopped"
-}
-```
-
-### Configuration
-
-#### `GET /config`
-
-Get the current configuration.
-
-**Response:**
-
-```json
-{
-    "plotter_info": {
-        "model": 8,
-        "nickname": "RaspberryPi-Plotter-001",
-        "firmware_version": "",
-        "software_version": "",
-        "port": null,
-        "port_config": 0,
-        "last_updated": "2024-01-01T00:00:00"
-    },
-    "plotter_settings": {
-        "speed_pendown": 25,
-        "speed_penup": 75,
-        "accel": 75,
-        "pen_pos_down": 40,
-        "pen_pos_up": 60,
-        "pen_rate_lower": 50,
-        "pen_rate_raise": 50,
-        "handling": 1,
-        "homing": true,
-        "model": 8,
-        "penlift": 1,
-        "auto_rotate": true,
-        "reordering": 0,
-        "random_start": false,
-        "hiding": false,
-        "report_time": true
-    },
-    "api_settings": {
-        "host": "0.0.0.0",
-        "port": 5000,
-        "debug": false,
-        "cors_enabled": true,
-        "max_job_queue": 100,
-        "job_timeout": 3600,
-        "log_level": "INFO"
-    },
-    "file_settings": {
-        "upload_directory": "uploads",
-        "output_directory": "output",
-        "max_file_size": 10485760,
-        "allowed_extensions": [".svg"],
-        "auto_cleanup": true,
-        "cleanup_age_days": 7
-    },
-    "safety_settings": {
-        "max_plot_time": 7200,
-        "emergency_stop_enabled": true,
-        "pen_height_limits": {
-            "min": 0,
-            "max": 100
+    "id": "svg_1234567890_abcd1234",
+    "file_size": 1048576,
+    "upload_progress": 100,
+    "original_filename": "my_design.svg",
+    "uploaded_at": "2023-08-01T11:30:00.000000",
+    "available_layers": [
+        {
+            "id": "layer1",
+            "name": "Cut Layer"
         },
-        "speed_limits": {
-            "min_pendown": 1,
-            "max_pendown": 100,
-            "min_penup": 1,
-            "max_penup": 100
+        {
+            "id": "layer2",
+            "name": "Engrave Layer"
         }
-    },
-    "notification_settings": {
-        "webhook_enabled": false,
-        "webhook_url": "",
-        "email_enabled": false,
-        "email_settings": {
-            "smtp_server": "",
-            "smtp_port": 587,
-            "username": "",
-            "password": "",
-            "recipient": ""
-        }
-    },
-    "version": "1.0.0",
-    "last_updated": "2024-01-01T00:00:00"
+    ],
+    "is_ready": true
 }
 ```
 
-#### `PUT /config`
-
-Update the configuration.
-
-**Request Body:**
+Or if no SVG is loaded:
 
 ```json
 {
-    "plotter_settings": {
-        "speed_pendown": 30,
-        "speed_penup": 80
-    },
-    "api_settings": {
-        "port": 5001
+    "message": "No SVG loaded",
+    "is_ready": false
+}
+```
+
+#### `GET /api/svg/filename`
+
+Get the filename of the currently loaded SVG.
+
+**Response:**
+
+```json
+{
+    "filename": "my_design.svg",
+    "has_svg": true
+}
+```
+
+Or if no SVG is loaded:
+
+```json
+{
+    "filename": null,
+    "has_svg": false
+}
+```
+
+#### `DELETE /svg/clear`
+
+Clear the current SVG from memory.
+
+**Response:**
+
+```json
+{
+    "message": "SVG cleared"
+}
+```
+
+**Error Response (409 - if plotting):**
+
+```json
+{
+    "error": "Cannot clear SVG while plotting"
+}
+```
+
+### Plotting Operations
+
+#### `POST /plot/<layer_name>`
+
+Start plotting a specific layer from the current SVG.
+
+**Parameters:**
+
+- `layer_name`: Name or ID of the layer to plot. Use "all" to plot all layers.
+
+**Request Body (optional):**
+
+```json
+{
+    "config_content": {
+        "speed": 2000,
+        "up_position": 2000,
+        "down_position": 1000
     }
 }
 ```
 
-**Response:**
+**Response (202 Accepted):**
 
 ```json
 {
-    "message": "Configuration updated"
+    "message": "Plot started",
+    "layer_name": "Cut Layer",
+    "svg_name": "my_design.svg"
 }
 ```
 
-#### `POST /config/reset`
+**Error Response (404 - layer not found):**
 
-Reset configuration to defaults.
+```json
+{
+    "error": "Layer 'unknown_layer' not found",
+    "available_layers": [
+        {
+            "id": "layer1",
+            "name": "Cut Layer"
+        },
+        {
+            "id": "layer2",
+            "name": "Engrave Layer"
+        }
+    ]
+}
+```
+
+**Error Response (409 - plotter busy):**
+
+```json
+{
+    "error": "Plotter is busy",
+    "current_status": "PLOTTING"
+}
+```
+
+#### `POST /plot/stop`
+
+Stop the current plotting operation.
 
 **Response:**
 
 ```json
 {
-    "message": "Configuration reset to defaults"
+    "message": "Plot stopped",
+    "success": true
+}
+```
+
+#### `POST /plot/pause`
+
+Pause the current plotting operation.
+
+**Response:**
+
+```json
+{
+    "message": "Plot paused",
+    "success": true
+}
+```
+
+#### `POST /plot/resume`
+
+Resume a paused plotting operation.
+
+**Response:**
+
+```json
+{
+    "message": "Plot resumed",
+    "success": true
 }
 ```
 
@@ -405,81 +368,20 @@ Reset configuration to defaults.
 
 #### `POST /utility/<command>`
 
-Execute utility commands. Available commands depend on the plotter implementation.
+Execute utility commands on the plotter.
 
 **Available Commands:**
 
-- `home`: Move the plotter to the home position (0,0)
-- `raise_pen`: Raise the pen
-- `lower_pen`: Lower the pen
-- `toggle_pen`: Toggle the pen state (up/down)
-- `move`: Move the plotter in a specified direction
-- `get_info`: Get system information from the plotter
-- `go_to_limit`: Move the plotter to its maximum limit position (34, 22)
+- `pen_up`: Raise the pen
+- `pen_down`: Lower the pen
+- `motors_off`: Turn off motors
+- `home`: Home the plotter
 
-**Request Body (for `move` command):**
+**Request Body (optional):**
 
 ```json
 {
-    "direction": "x", // "x" or "y"
-    "distance": 10.0, // Distance to move
-    "units": "mm" // "mm" or "inches"
-}
-```
-
-**Request Body (for other commands):**
-Most other commands don't require parameters.
-
-**Response:**
-
-```json
-{
-    "result": "Command output or success message"
-}
-```
-
-**Example (Go to limit):**
-
-```
-POST /utility/go_to_limit
-```
-
-Response:
-
-```json
-{
-    "success": true,
-    "message": "Moved to plotter limit (34, 22)"
-}
-```
-
-**Example (Go to home):**
-
-```
-POST /utility/home
-```
-
-Response:
-
-```json
-{
-    "success": true,
-    "message": "Moved to home position"
-}
-```
-
-### System Management
-
-#### `POST /update`
-
-Trigger a remote update of the plotter software.
-
-**Request Body:**
-
-```json
-{
-    "branch": "main",
-    "force": false
+    "parameter": "value"
 }
 ```
 
@@ -487,123 +389,160 @@ Trigger a remote update of the plotter software.
 
 ```json
 {
-    "success": true,
-    "message": "Update completed successfully",
-    "details": {
-        "previous_version": "1.0.0",
-        "new_version": "1.1.0",
-        "updated_files": 5
-    }
+    "result": "Command executed successfully"
 }
 ```
+
+### Logs
 
 #### `GET /logs`
 
-Get recent log entries.
+Retrieve recent log entries.
 
 **Query Parameters:**
 
-- `lines` (optional): Number of log lines to retrieve (default: 100)
+- `lines` (optional): Number of log lines to return (default: 100)
 
 **Response:**
 
 ```json
 {
-    "logs": ["2023-08-01 12:00:00 INFO: Server started", "2023-08-01 12:05:00 INFO: Job job_1234567890 started", "2023-08-01 12:30:00 INFO: Job job_1234567890 completed"]
+    "logs": ["2023-08-01 12:00:00,000 INFO: SVG uploaded successfully: my_design.svg", "2023-08-01 12:01:00,000 INFO: Received request to plot layer 'Cut Layer' from my_design.svg", "2023-08-01 12:01:01,000 INFO: Successfully plotted layer Cut Layer"]
 }
 ```
 
-## Configuration Options
+## Usage Examples
 
-### Plotter Settings
+### Complete Workflow Example
 
-| Parameter      | Type    | Description                              |
-| -------------- | ------- | ---------------------------------------- |
-| speed_pendown  | Integer | Movement speed when pen is down (1-100)  |
-| speed_penup    | Integer | Movement speed when pen is up (1-100)    |
-| accel          | Integer | Acceleration rate (1-100)                |
-| pen_pos_down   | Integer | Pen down position (0-100)                |
-| pen_pos_up     | Integer | Pen up position (0-100)                  |
-| pen_rate_lower | Integer | Pen lowering rate (1-100)                |
-| pen_rate_raise | Integer | Pen raising rate (1-100)                 |
-| handling       | Integer | Reserved parameter                       |
-| homing         | Boolean | Whether to home the axes before plotting |
-| model          | Integer | Plotter model identifier                 |
-| penlift        | Integer | Pen lift mode                            |
-| auto_rotate    | Boolean | Auto-rotate SVG to fit paper             |
-| reordering     | Integer | Path reordering mode (0-4)               |
-| random_start   | Boolean | Start from random point in plot          |
-| hiding         | Boolean | Hide lines not being plotted             |
-| report_time    | Boolean | Report estimated time                    |
+1. **Upload an SVG:**
 
-### API Settings
+```bash
+curl -X POST -F "file=@design.svg" http://localhost:5000/api/svg
+```
 
-| Parameter     | Type    | Description                                 |
-| ------------- | ------- | ------------------------------------------- |
-| host          | String  | Host address to bind to                     |
-| port          | Integer | Port to listen on                           |
-| debug         | Boolean | Enable debug mode                           |
-| cors_enabled  | Boolean | Enable CORS for web UIs                     |
-| max_job_queue | Integer | Maximum size of job queue                   |
-| job_timeout   | Integer | Job timeout in seconds                      |
-| log_level     | String  | Logging level (DEBUG, INFO, WARNING, ERROR) |
+2. **Check status:**
 
-### File Settings
+```bash
+curl http://localhost:5000/status
+```
 
-| Parameter          | Type    | Description                      |
-| ------------------ | ------- | -------------------------------- |
-| upload_directory   | String  | Directory for uploaded files     |
-| output_directory   | String  | Directory for output files       |
-| max_file_size      | Integer | Maximum file size in bytes       |
-| allowed_extensions | Array   | Allowed file extensions          |
-| auto_cleanup       | Boolean | Automatically clean up old files |
-| cleanup_age_days   | Integer | Age in days before cleanup       |
+3. **Plot a specific layer:**
 
-### Safety Settings
+```bash
+curl -X POST http://localhost:5000/plot/Cut%20Layer \
+  -H "Content-Type: application/json" \
+  -d '{"config_content": {"speed": 2000}}'
+```
 
-| Parameter              | Type    | Description                  |
-| ---------------------- | ------- | ---------------------------- |
-| max_plot_time          | Integer | Maximum plot time in seconds |
-| emergency_stop_enabled | Boolean | Enable emergency stop        |
-| pen_height_limits      | Object  | Min/max pen height limits    |
-| speed_limits           | Object  | Min/max speed limits         |
+4. **Monitor progress:**
 
-### Notification Settings
+```bash
+# Poll the status endpoint
+curl http://localhost:5000/status
+```
 
-| Parameter       | Type    | Description                   |
-| --------------- | ------- | ----------------------------- |
-| webhook_enabled | Boolean | Enable webhook notifications  |
-| webhook_url     | String  | URL for webhook notifications |
-| email_enabled   | Boolean | Enable email notifications    |
-| email_settings  | Object  | Email server settings         |
+5. **Stop plotting if needed:**
+
+```bash
+curl -X POST http://localhost:5000/plot/stop
+```
+
+### JavaScript/Frontend Example
+
+```javascript
+class PlotterAPI {
+    constructor(baseURL = "http://localhost:5000") {
+        this.baseURL = baseURL;
+    }
+
+    async uploadSVG(file) {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const response = await fetch(`${this.baseURL}/api/svg`, {
+            method: "POST",
+            body: formData,
+        });
+
+        return response.json();
+    }
+
+    async getStatus() {
+        const response = await fetch(`${this.baseURL}/status`);
+        return response.json();
+    }
+
+    async plotLayer(layerName, config = {}) {
+        const response = await fetch(`${this.baseURL}/plot/${encodeURIComponent(layerName)}`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ config_content: config }),
+        });
+
+        return response.json();
+    }
+
+    async stopPlot() {
+        const response = await fetch(`${this.baseURL}/plot/stop`, {
+            method: "POST",
+        });
+
+        return response.json();
+    }
+}
+
+// Usage
+const api = new PlotterAPI();
+
+// Upload SVG
+const fileInput = document.getElementById("svg-file");
+const result = await api.uploadSVG(fileInput.files[0]);
+
+// Start plotting
+await api.plotLayer("Cut Layer", { speed: 2000 });
+
+// Monitor status
+setInterval(async () => {
+    const status = await api.getStatus();
+    console.log(`Progress: ${status.system.plot_progress}%`);
+}, 1000);
+```
 
 ## Error Handling
 
-All endpoints may return error responses in the following format:
+The API uses standard HTTP status codes and always returns JSON responses for errors:
 
 ```json
 {
-    "error": "Error message describing what went wrong"
+    "error": "Description of the error"
 }
 ```
 
-## Building a UI
+Common error scenarios:
 
-When building a UI to interact with this API, consider the following:
+- No SVG uploaded when trying to plot
+- Invalid layer name
+- Plotter busy
+- File too large (>500MB)
+- Cannot clear SVG while plotting
 
-1. **Real-time updates**: Poll the `/status` endpoint to get real-time updates on plotter and job status.
-2. **File uploads**: For large files, use the chunked upload endpoint to provide progress feedback.
-3. **Job management**: Allow users to view, cancel, and manage jobs through the jobs endpoints.
-4. **Configuration**: Provide interfaces for configuring plotter settings.
-5. **Error handling**: Properly handle and display API errors to users.
-6. **Logging**: Use the logs endpoint to provide debugging information.
+## Best Practices
 
-## Example UI Workflow
+1. **Always check status** before starting a plot to ensure the plotter is idle
+2. **Use chunked upload** for files larger than a few MB to provide progress feedback
+3. **Handle errors gracefully** - the plotter may be busy or in an error state
+4. **Poll the status endpoint** during plotting to monitor progress
+5. **Validate layer names** before attempting to plot
 
-1. Check server health via `/health`
-2. Display current status via `/status`
-3. Allow configuration via `/config`
-4. Provide job submission via `/plot` or `/plot/chunk`
-5. Show job queue and status via `/jobs`
-6. Offer controls via `/pause`, `/resume`, and `/stop`
-7. Display logs via `/logs`
+## Migration from Project-Based API
+
+If migrating from the previous project-based API:
+
+1. Replace `/api/project` POST with `/api/svg` POST
+2. Remove `/api/project/svg` - now just `/api/svg`
+3. Add calls to `/api/svg/filename` to get current filename
+4. Replace `/project` DELETE with `/svg/clear` DELETE
+5. Remove project ID/name from plot requests - only layer name is needed
