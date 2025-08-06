@@ -163,3 +163,4 @@ test_*.svg
 example_*.svg
 
 projects/**
+svg_storage
