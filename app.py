@@ -271,14 +271,14 @@ def plot_layer(layer_name):
                     system_status['time_data'] = time_data
 
                 # Execute the plot
-                # success = plotter_controller.plot_file(
-                #     svg_path,
-                #     config_overrides=config_overrides,
-                #     job_name=f"{svg_name}_{layer_name}",
-                #     layer_name=layer_name
-                # )
+                success = plotter_controller.plot_file(
+                    svg_path,
+                    config_overrides=config_overrides,
+                    job_name=f"{svg_name}_{layer_name}",
+                    layer_name=layer_name
+                )
 
-                time.sleep(5)
+                #time.sleep(15000)
                 success = True
 
                 with status_lock:
