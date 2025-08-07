@@ -12,6 +12,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from logging.handlers import RotatingFileHandler
+from serial_communication import sendPlotStartToSerial
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from plotter_controller import PlotterController
@@ -50,12 +51,12 @@ system_status = {
     "current_layer": None,
     "plot_progress": 0,
     "last_error": None,
+    "time_data": None,
     "uptime_start": datetime.now().isoformat()
 }
 
 # Lock for thread safety
 status_lock = threading.Lock()
-
 
 @app.before_request
 def before_request():
@@ -101,8 +102,8 @@ def get_status():
                 "system": {
                     "plotter_status": system_status['plotter_status'],
                     "current_layer": system_status['current_layer'],
-                    "plot_progress": system_status['plot_progress'],
-                    "last_error": system_status['last_error']
+                    "time_data": system_status['time_data'],
+                    "uptime_start": system_status['uptime_start']
                 },
                 "svg": svg_status
             }
@@ -252,6 +253,14 @@ def plot_layer(layer_name):
 
         logger.info(f"Received request to plot layer '{layer_name}' from {svg_name}")
 
+        time_data = request.json.get('time_data');
+
+        try:
+            sendPlotStartToSerial(time_data, svg_name, layer_name)
+        except Exception as e:
+            logger.error(f"Error sending plot data to serial display: {str(e)}")
+
+
         # Start plotting in background thread
         def execute_plot():
             try:
@@ -259,23 +268,29 @@ def plot_layer(layer_name):
                     system_status['plotter_status'] = "PLOTTING"
                     system_status['current_layer'] = layer_name
                     system_status['plot_progress'] = 0
+                    system_status['time_data'] = time_data
 
                 # Execute the plot
-                success = plotter_controller.plot_file(
-                    svg_path,
-                    config_overrides=config_overrides,
-                    job_name=f"{svg_name}_{layer_name}",
-                    layer_name=layer_name
-                )
+                # success = plotter_controller.plot_file(
+                #     svg_path,
+                #     config_overrides=config_overrides,
+                #     job_name=f"{svg_name}_{layer_name}",
+                #     layer_name=layer_name
+                # )
+
+                time.sleep(5)
+                success = True
 
                 with status_lock:
                     if success:
                         system_status['plotter_status'] = "IDLE"
                         system_status['plot_progress'] = 100
+                        system_status['time_data'] = None
                         logger.info(f"Successfully plotted layer {layer_name}")
                     else:
                         system_status['plotter_status'] = "ERROR"
                         system_status['last_error'] = "Plot execution failed"
+                        system_status['time_data'] = None
                         logger.error(f"Failed to plot layer {layer_name}")
 
                     system_status['current_layer'] = None
@@ -286,10 +301,12 @@ def plot_layer(layer_name):
                     system_status['plotter_status'] = "ERROR"
                     system_status['last_error'] = str(e)
                     system_status['current_layer'] = None
+                    system_status['time_data'] = None
 
         # Start plot thread
         plot_thread = threading.Thread(target=execute_plot, daemon=True)
         plot_thread.start()
+
 
         return jsonify({
             "message": "Plot started",

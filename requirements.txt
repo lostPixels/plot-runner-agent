@@ -4,3 +4,5 @@ Werkzeug==2.3.7
 gunicorn==21.2.0
 requests==2.31.0
 watchdog==3.0.0
+pytz
+pyserial
