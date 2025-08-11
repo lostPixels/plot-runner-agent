@@ -252,12 +252,21 @@ def plot_layer(layer_name):
 
         logger.info(f"Received request to plot layer '{layer_name}' from {svg_name}")
 
-        time_data = request.json.get('time_data');
+        time_data = request.json.get('time_data')
 
+        # Send plot data to serial display (non-blocking, best effort)
         try:
-            sendPlotStartToSerial(time_data, svg_name, layer_name)
+            if time_data:
+                serial_success = sendPlotStartToSerial(time_data, svg_name, layer_name)
+                if serial_success:
+                    logger.info(f"Successfully sent plot data to serial display for {svg_name} layer {layer_name}")
+                else:
+                    logger.warning(f"Failed to send plot data to serial display for {svg_name} layer {layer_name}")
+            else:
+                logger.debug("No time_data provided, skipping serial communication")
         except Exception as e:
-            logger.error(f"Error sending plot data to serial display: {str(e)}")
+            # Don't let serial communication failures stop the plot
+            logger.error(f"Error sending plot data to serial display: {str(e)}", exc_info=True)
 
 
         # Start plotting in background thread
