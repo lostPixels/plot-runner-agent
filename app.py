@@ -4,7 +4,6 @@ A Flask application for controlling NextDraw plotters with a single current SVG 
 """
 
 import os
-import json
 import threading
 import time
 import logging
@@ -271,15 +270,15 @@ def plot_layer(layer_name):
                     system_status['time_data'] = time_data
 
                 # Execute the plot
-                success = plotter_controller.plot_file(
+                result = plotter_controller.plot_file(
                     svg_path,
                     config_overrides=config_overrides,
                     job_name=f"{svg_name}_{layer_name}",
                     layer_name=layer_name
                 )
 
-                #time.sleep(15000)
-                success = True
+                # Check the result to see if it was successful
+                success = result.get('success', False) if result else False
 
                 with status_lock:
                     if success:
@@ -370,6 +369,8 @@ def resume_plot():
         with status_lock:
             if success:
                 system_status['plotter_status'] = "PLOTTING"
+                logger.info("Plot resume initiated, status set to PLOTTING")
+                # The background status sync thread will handle tracking when it completes
 
         return jsonify({
             "message": "Plot resumed" if success else "Failed to resume plot",
@@ -465,6 +466,59 @@ def update_plot_progress(progress):
 
 # Set the progress callback
 plotter_controller.set_progress_callback(update_plot_progress)
+
+
+# Background status sync thread
+def sync_status_with_controller():
+    """Continuously sync app status with plotter controller status"""
+    last_controller_status = None
+
+    while True:
+        try:
+            time.sleep(0.5)  # Check every 500ms
+
+            # Get current plotter controller status
+            controller_status = plotter_controller.get_status()
+            current_status = controller_status.get('status', 'DISCONNECTED')
+
+            # Only update if status changed
+            if current_status != last_controller_status:
+                with status_lock:
+                    # Map controller status to app status
+                    if current_status == 'IDLE':
+                        if system_status['plotter_status'] in ['PLOTTING', 'PAUSED', 'ERROR']:
+                            system_status['plotter_status'] = "IDLE"
+                            system_status['current_layer'] = None
+                            system_status['plot_progress'] = 0
+                            logger.info(f"Status sync: Controller is IDLE, app status updated from {system_status['plotter_status']} to IDLE")
+
+                    elif current_status == 'PLOTTING':
+                        if system_status['plotter_status'] != 'PLOTTING':
+                            system_status['plotter_status'] = "PLOTTING"
+                            logger.info("Status sync: Controller is PLOTTING")
+
+                    elif current_status == 'PAUSED':
+                        if system_status['plotter_status'] != 'PAUSED':
+                            system_status['plotter_status'] = "PAUSED"
+                            logger.info("Status sync: Controller is PAUSED")
+
+                    elif current_status == 'ERROR':
+                        if system_status['plotter_status'] != 'ERROR':
+                            system_status['plotter_status'] = "ERROR"
+                            system_status['last_error'] = controller_status.get('last_error', 'Unknown error')
+                            logger.error(f"Status sync: Controller ERROR - {system_status['last_error']}")
+
+                last_controller_status = current_status
+
+        except Exception as e:
+            logger.error(f"Error in status sync thread: {str(e)}")
+            time.sleep(2)  # Wait longer on error
+
+
+# Start background status sync thread
+status_sync_thread = threading.Thread(target=sync_status_with_controller, daemon=True)
+status_sync_thread.start()
+logger.info("Started background status sync thread")
 
 
 if __name__ == '__main__':
