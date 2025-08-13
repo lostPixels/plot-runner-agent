@@ -253,6 +253,7 @@ def plot_layer(layer_name):
         logger.info(f"Received request to plot layer '{layer_name}' from {svg_name}")
 
         time_data = request.json.get('time_data')
+        progress_in_mm = request.json.get('progress_in_mm')
 
         # Send plot data to serial display (non-blocking, best effort)
         try:
@@ -283,7 +284,8 @@ def plot_layer(layer_name):
                     svg_path,
                     config_overrides=config_overrides,
                     job_name=f"{svg_name}_{layer_name}",
-                    layer_name=layer_name
+                    layer_name=layer_name,
+                    progress_in_mm=progress_in_mm
                 )
 
                 # Check the result to see if it was successful

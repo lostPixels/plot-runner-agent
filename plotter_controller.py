@@ -105,11 +105,18 @@ class PlotterController:
 
     def draw_bullseye(self):
         """Draw a bullseye pattern on the plotter"""
+        print("DRAW BULLSEYE")
+        # self.nextdraw.plot_setup("bullseye-helper/bullseye.svg");
+        # self.nextdraw.plot_run(True)
+
+
         with open("bullseye-helper/bullseyeconfig.json", "r") as file:
             config = json.load(file)
         opts = {
+            "name": "Bullseye",
             "config_overrides": config,
-            "svg_file": "bullseye-helper/bullseye.svg"
+            "svg_file": "bullseye-helper/bullseye.svg",
+
         }
         return self.execute_job(opts)
 
@@ -147,6 +154,9 @@ class PlotterController:
             # Setup plot
             svg_content = job_data.get('svg_content')
             svg_file = job_data.get('svg_file')
+            progress_in_mm = 0
+            if job_data.get('progress_in_mm') is not None:
+                progress_in_mm = progress_in_mm / 100
 
             if svg_content:
                 self.nextdraw.plot_setup(svg_content)
@@ -175,26 +185,31 @@ class PlotterController:
                     elif hasattr(self.nextdraw.options, key):
                         setattr(self.nextdraw.options, key, value)
 
-            # Handle layer selection
-            layer = job_data.get('layer_name', 'all')
-            if layer != "all":
-                self.nextdraw.options.mode = "layers"
-                self.nextdraw.options.layer = int(layer)
 
-            # Handle start_mm parameter for partial plotting
-            start_mm = job_data.get('start_mm')
-            if start_mm is not None:
+            has_progress_assigned = progress_in_mm is not None and progress_in_mm != 0
+
+            if has_progress_assigned:
                 try:
                     # Adjust resume position
                     self.nextdraw.options.mode = "utility"
                     self.nextdraw.options.utility_cmd = "res_adj_mm"
-                    self.nextdraw.options.dist = float(start_mm)
+                    self.nextdraw.options.dist = float(progress_in_mm)
                     output_svg = self.nextdraw.plot_run(True)
 
                     # Re-setup with adjusted SVG
                     self.nextdraw.plot_setup(output_svg)
                     self.nextdraw.options.mode = "res_plot"
-                    logger.info(f"Set resume position to {start_mm} mm")
+                    self.nextdraw.update();
+                    # Reapply config
+                    if isinstance(job_config, dict):
+                        for key, value in job_config.items():
+                            if isinstance(value, dict):
+                                for sub_key, sub_value in value.items():
+                                    if sub_key != 'name' and hasattr(self.nextdraw.options, sub_key):
+                                        setattr(self.nextdraw.options, sub_key, sub_value)
+                            elif hasattr(self.nextdraw.options, key):
+                                setattr(self.nextdraw.options, key, value)
+                    logger.info(f"Set resume position to {progress_in_mm} mm")
                 except Exception as e:
                     logger.error(f"Failed to set start position: {str(e)}")
                     with self.lock:
@@ -202,8 +217,24 @@ class PlotterController:
                         self.status = "ERROR"
                     return {"success": False, "error": f"Failed to set start position: {str(e)}"}
 
+
+            # Handle layer selection
+            layer = job_data.get('layer_name', 'all')
+            if layer != "all" and has_progress_assigned is False:
+                self.nextdraw.options.mode = "layers"
+                self.nextdraw.options.layer = int(layer)
+                self.nextdraw.update()
+                logger.info(f"Selected layer {layer}")
+            elif has_progress_assigned:
+
+                self.nextdraw.options.mode = "res_plot"
+            else:
+                self.nextdraw.options.mode = "plot"
+
+
             # Execute plot and capture output
             try:
+                print("!!!!!!!!!!EXECUTING PLOT with mode: ",self.nextdraw.options.mode)
                 result = self.nextdraw.plot_run(True)  # Always return output SVG for pause/resume
 
                 # Check if we were paused
@@ -387,6 +418,11 @@ class PlotterController:
             return False
 
     def execute_utility(self, utility_cmd, options=None):
+
+        if utility_cmd == "bullseye":
+            return self.draw_bullseye()
+
+
         """Execute a utility command"""
         try:
             with self.lock:
@@ -473,7 +509,7 @@ class PlotterController:
         except Exception as e:
             return {"connected": False, "message": str(e)}
 
-    def plot_file(self, svg_path, config_overrides=None, job_name=None, layer_name=None):
+    def plot_file(self, svg_path, config_overrides=None, job_name=None, layer_name=None, progress_in_mm=0):
         """Plot an SVG file with optional layer filtering"""
         try:
             # Check if file exists
@@ -485,7 +521,8 @@ class PlotterController:
                 'svg_file': svg_path,
                 'name': job_name or f'Plot_{int(time.time())}',
                 'config_overrides': config_overrides or {},
-                'layer_name': layer_name
+                'layer_name': layer_name,
+                'progress_in_mm': progress_in_mm
             }
 
             # Execute the job
