@@ -154,27 +154,80 @@ class PlotterController:
             # Setup plot
             svg_content = job_data.get('svg_content')
             svg_file = job_data.get('svg_file')
-            progress_in_mm = 0
-            if job_data.get('progress_in_mm') is not None:
-                progress_in_mm = progress_in_mm / 100
+            svg_origin = svg_content or svg_file
 
-            if svg_content:
-                self.nextdraw.plot_setup(svg_content)
-            elif svg_file and os.path.exists(svg_file):
-                self.nextdraw.plot_setup(svg_file)
-            else:
+            if svg_origin is None:
                 with self.lock:
                     self._cleanup_state()
                     self.status = "ERROR"
                 return {"success": False, "error": "No valid SVG content or file provided"}
 
-            # Apply configuration
+            progress_in_mm = job_data.get('progress_in_mm') or 0
+            progress_in_mm /= 100
+
+            print("job_data",job_data.get('progress_in_mm'), progress_in_mm)
+
             job_config = job_data.get('config_overrides', {})
             if isinstance(job_config, str):
                 try:
                     job_config = json.loads(job_config)
                 except:
-                    logger.warning("Could not parse config as JSON")
+                    job_config = {}
+
+            has_progress_assigned = progress_in_mm is not None and progress_in_mm != 0
+
+            # Handle layer selection
+            layer = job_data.get('layer_name', 'all')
+
+            if has_progress_assigned:
+                try:
+                    nd_plob_maker = NextDraw()
+                    output_plob = None
+
+                    if layer != "all":
+                        print('Create PLOB with Layer Only.', layer)
+                        nd_plob_maker.plot_setup(svg_origin)
+                        if isinstance(job_config, dict):
+                            for key, value in job_config.items():
+                                if isinstance(value, dict):
+                                    for sub_key, sub_value in value.items():
+                                        if sub_key != 'name' and hasattr(nd_plob_maker.options, sub_key):
+                                            setattr(nd_plob_maker.options, sub_key, sub_value)
+                                elif hasattr(nd_plob_maker.options, key):
+                                    setattr(nd_plob_maker.options, key, value)
+
+                        nd_plob_maker.options.digest = 2
+                        nd_plob_maker.options.mode = "layers"
+                        nd_plob_maker.options.layer = int(layer)
+                        nd_plob_maker.update()
+                        output_plob = nd_plob_maker.plot_run(True)
+                        nd_plob_maker.plot_setup(output_plob)
+                    else:
+                        nd_plob_maker.plot_setup(svg_origin)
+
+                    nd_plob_maker.options.mode = "utility"
+                    nd_plob_maker.options.utility_cmd = "res_adj_mm"
+                    nd_plob_maker.options.dist = float(progress_in_mm)
+                    nd_plob_maker.update();
+                    svg_origin = nd_plob_maker.plot_run(True) #Update SVG origin with drawing that has layer and resume position set.
+
+                    self.nextdraw.plot_setup(svg_origin)
+                    self.nextdraw.options.mode = "res_plot"
+
+                    print(f"Begin plotting with progress assignment. {progress_in_mm}")
+
+                except Exception as e:
+                    print(f"Error creating plot with progress assignment: {e}")
+                    logger.error(f"Error creating plot with progress assignment: {e}")
+
+            else:
+                self.nextdraw.plot_setup(svg_origin)
+
+                if layer != "all":
+                    self.nextdraw.options.mode = "layers"
+                    self.nextdraw.options.layer = int(layer)
+                    logger.info(f"Selected layer {layer}")
+
 
             if isinstance(job_config, dict):
                 for key, value in job_config.items():
@@ -185,56 +238,12 @@ class PlotterController:
                     elif hasattr(self.nextdraw.options, key):
                         setattr(self.nextdraw.options, key, value)
 
-
-            has_progress_assigned = progress_in_mm is not None and progress_in_mm != 0
-
-            if has_progress_assigned:
-                try:
-                    # Adjust resume position
-                    self.nextdraw.options.mode = "utility"
-                    self.nextdraw.options.utility_cmd = "res_adj_mm"
-                    self.nextdraw.options.dist = float(progress_in_mm)
-                    output_svg = self.nextdraw.plot_run(True)
-
-                    # Re-setup with adjusted SVG
-                    self.nextdraw.plot_setup(output_svg)
-                    self.nextdraw.options.mode = "res_plot"
-                    self.nextdraw.update();
-                    # Reapply config
-                    if isinstance(job_config, dict):
-                        for key, value in job_config.items():
-                            if isinstance(value, dict):
-                                for sub_key, sub_value in value.items():
-                                    if sub_key != 'name' and hasattr(self.nextdraw.options, sub_key):
-                                        setattr(self.nextdraw.options, sub_key, sub_value)
-                            elif hasattr(self.nextdraw.options, key):
-                                setattr(self.nextdraw.options, key, value)
-                    logger.info(f"Set resume position to {progress_in_mm} mm")
-                except Exception as e:
-                    logger.error(f"Failed to set start position: {str(e)}")
-                    with self.lock:
-                        self._cleanup_state()
-                        self.status = "ERROR"
-                    return {"success": False, "error": f"Failed to set start position: {str(e)}"}
-
-
-            # Handle layer selection
-            layer = job_data.get('layer_name', 'all')
-            if layer != "all" and has_progress_assigned is False:
-                self.nextdraw.options.mode = "layers"
-                self.nextdraw.options.layer = int(layer)
-                self.nextdraw.update()
-                logger.info(f"Selected layer {layer}")
-            elif has_progress_assigned:
-
-                self.nextdraw.options.mode = "res_plot"
-            else:
-                self.nextdraw.options.mode = "plot"
-
+            self.nextdraw.update();
 
             # Execute plot and capture output
             try:
                 print("!!!!!!!!!!EXECUTING PLOT with mode: ",self.nextdraw.options.mode)
+                logger.info(f"Executing plot with mode: {self.nextdraw.options.mode}")
                 result = self.nextdraw.plot_run(True)  # Always return output SVG for pause/resume
 
                 # Check if we were paused
