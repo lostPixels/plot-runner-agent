@@ -29,16 +29,33 @@ app.config['REQUEST_TIMEOUT'] = 300  # 5 minutes timeout
 if not os.path.exists('logs'):
     os.makedirs('logs')
 
-logging.basicConfig(
-    handlers=[
-        RotatingFileHandler('logs/app.log', maxBytes=10000000, backupCount=5),
-        logging.StreamHandler()
-    ],
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s: %(message)s'
-)
+# Get the root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# Remove any existing handlers to avoid duplicates after reload
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+
+# Create formatter
+formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+
+# Create and configure file handler
+file_handler = RotatingFileHandler('logs/app.log', maxBytes=10000000, backupCount=5)
+file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.INFO)
+
+# Create and configure console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+console_handler.setLevel(logging.INFO)
+
+# Add handlers to root logger
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
+logger.info("Logging system initialized/reinitialized")
 
 # Initialize core components
 plotter_controller = PlotterController()

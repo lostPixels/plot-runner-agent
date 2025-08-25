@@ -442,26 +442,26 @@ class PlotterController:
 
             logger.info(f"Executing utility command: {utility_cmd}")
 
-            # Create temporary NextDraw instance
-            nd = NextDraw()
-            nd.plot_setup()
-            nd.options.mode = "utility"
-            nd.options.utility_cmd = utility_cmd
+            if utility_cmd == "home":
+                nd = NextDraw()
+                nd.plot_setup()
+                nd.options.mode = "find_home"
+                nd.plot_run()
+            elif utility_cmd == "limit":
+                print("TODO")
+            elif utility_cmd =="disable_motors":
+                nd = NextDraw()
+                nd.plot_setup()
+                nd.options.mode = "utility"
+                nd.options.utility_cmd = "disable_xy"
+                nd.plot_run()
 
-            # Apply additional options if provided
-            if options and isinstance(options, dict):
-                for key, value in options.items():
-                    if hasattr(nd.options, key):
-                        setattr(nd.options, key, value)
-
-            # Execute utility command
-            result = nd.plot_run()
 
             with self.lock:
                 self.status = "IDLE"
 
             logger.info(f"Utility command '{utility_cmd}' completed")
-            return {"success": True, "result": result}
+            return {"success": True}
 
         except Exception as e:
             logger.error(f"Utility command failed: {str(e)}")
