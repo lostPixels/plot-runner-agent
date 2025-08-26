@@ -28,8 +28,8 @@ class LilygoDisplay:
     ]
 
     # Connection parameters
-    MAX_RETRIES = 3
-    RETRY_DELAY = 0.5  # seconds
+    MAX_RETRIES = 1  # Reduce to single retry for faster failure
+    RETRY_DELAY = 0.2  # Reduce initial delay to minimize blocking
     READ_TIMEOUT = 2.0  # seconds
     WRITE_TIMEOUT = 1.0  # seconds
     CONNECTION_CHECK_INTERVAL = 5.0  # seconds

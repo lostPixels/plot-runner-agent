@@ -232,6 +232,7 @@ def get_svg_filename():
 @app.route('/plot/<layer_name>', methods=['POST'])
 def plot_layer(layer_name):
     """Execute plotting for a specific layer by name"""
+    request_start_time = time.time()
     try:
         logger.debug(f"plot_layer: Checking if SVG is ready for layer {layer_name}")
         # Check if SVG is ready
@@ -258,6 +259,13 @@ def plot_layer(layer_name):
         svg_path = svg_manager.get_svg_file_path()
         svg_name = svg_manager.get_original_filename()
 
+        # Track SVG file size
+        svg_size_mb = 0
+        if svg_path and os.path.exists(svg_path):
+            svg_size_bytes = os.path.getsize(svg_path)
+            svg_size_mb = svg_size_bytes / (1024 * 1024)
+            logger.info(f"SVG file '{svg_name}' size: {svg_size_mb:.2f} MB ({svg_size_bytes:,} bytes)")
+
         if not svg_path:
             return jsonify({"error": "No SVG file found"}), 404
 
@@ -272,23 +280,39 @@ def plot_layer(layer_name):
         time_data = request.json.get('time_data')
         progress_in_mm = request.json.get('progress_in_mm')
 
-        # Send plot data to serial display (non-blocking, best effort)
-        try:
-            if time_data:
-                serial_success = sendPlotStartToSerial(time_data, svg_name, layer_name)
-                if serial_success:
-                    logger.info(f"Successfully sent plot data to serial display for {svg_name} layer {layer_name}")
+        # Send plot data to serial display (truly non-blocking, best effort)
+        def send_serial_async():
+            try:
+                if time_data:
+                    serial_success = sendPlotStartToSerial(time_data, svg_name, layer_name)
+                    if serial_success:
+                        logger.info(f"Successfully sent plot data to serial display for {svg_name} layer {layer_name}")
+                    else:
+                        logger.warning(f"Failed to send plot data to serial display for {svg_name} layer {layer_name}")
                 else:
-                    logger.warning(f"Failed to send plot data to serial display for {svg_name} layer {layer_name}")
-            else:
-                logger.debug("No time_data provided, skipping serial communication")
-        except Exception as e:
-            # Don't let serial communication failures stop the plot
-            logger.error(f"Error sending plot data to serial display: {str(e)}", exc_info=True)
+                    logger.debug("No time_data provided, skipping serial communication")
+            except Exception as e:
+                # Don't let serial communication failures stop the plot
+                logger.error(f"Error sending plot data to serial display: {str(e)}", exc_info=True)
 
+        # Start serial communication in a separate thread so it doesn't block
+        serial_start_time = time.time()
+        if time_data:
+            serial_thread = threading.Thread(target=send_serial_async, daemon=True)
+            serial_thread.start()
+            logger.debug("Started serial communication in background thread")
+        serial_elapsed = time.time() - serial_start_time
+        logger.info(f"Serial communication setup time: {serial_elapsed:.3f}s")
+
+        # Log timing before starting plot
+        pre_plot_elapsed = time.time() - request_start_time
+        logger.info(f"Pre-plot preparation time: {pre_plot_elapsed:.3f}s | SVG size: {svg_size_mb:.2f}MB")
 
         # Start plotting in background thread
         def execute_plot():
+            plot_thread_start = time.time()
+            logger.info(f"Plot thread started - Time from request: {plot_thread_start - request_start_time:.3f}s")
+
             try:
                 with status_lock:
                     system_status['plotter_status'] = "PLOTTING"
@@ -297,6 +321,8 @@ def plot_layer(layer_name):
                     system_status['time_data'] = time_data
 
                 # Execute the plot
+                controller_start = time.time()
+                logger.info(f"Calling plotter_controller.plot_file() - Time from request: {controller_start - request_start_time:.3f}s")
                 result = plotter_controller.plot_file(
                     svg_path,
                     config_overrides=config_overrides,
@@ -304,6 +330,9 @@ def plot_layer(layer_name):
                     layer_name=layer_name,
                     progress_in_mm=progress_in_mm
                 )
+
+                controller_end = time.time()
+                logger.info(f"plotter_controller.plot_file() returned - Duration: {controller_end - controller_start:.3f}s")
 
                 # Check the result to see if it was successful
                 success = result.get('success', False) if result else False
@@ -334,6 +363,9 @@ def plot_layer(layer_name):
         plot_thread = threading.Thread(target=execute_plot, daemon=True)
         plot_thread.start()
 
+        # Log request completion time
+        request_elapsed = time.time() - request_start_time
+        logger.info(f"Plot request completed in {request_elapsed:.3f}s (returning 202 to client)")
 
         return jsonify({
             "message": "Plot started",

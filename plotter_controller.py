@@ -147,14 +147,29 @@ class PlotterController:
 
             logger.info(f"Request to begin plot job: {job_data.get('name', 'Unnamed job')}")
             start_time = time.time()
+            timing_stages = {}  # Track timing for each stage
 
             # Create fresh NextDraw instance for this job
+            timing_stages['nextdraw_init_start'] = time.time()
             self.nextdraw = NextDraw()
+            timing_stages['nextdraw_init_end'] = time.time()
+            logger.info(f"NextDraw instance created in {timing_stages['nextdraw_init_end'] - timing_stages['nextdraw_init_start']:.3f}s")
 
             # Setup plot
             svg_content = job_data.get('svg_content')
             svg_file = job_data.get('svg_file')
             svg_origin = svg_content or svg_file
+
+            # Track SVG file size
+            svg_size_mb = 0
+            if svg_file and os.path.exists(svg_file):
+                svg_size_bytes = os.path.getsize(svg_file)
+                svg_size_mb = svg_size_bytes / (1024 * 1024)
+                logger.info(f"SVG file size: {svg_size_mb:.2f} MB ({svg_size_bytes:,} bytes)")
+            elif svg_content:
+                svg_size_bytes = len(svg_content.encode('utf-8')) if isinstance(svg_content, str) else len(svg_content)
+                svg_size_mb = svg_size_bytes / (1024 * 1024)
+                logger.info(f"SVG content size: {svg_size_mb:.2f} MB ({svg_size_bytes:,} bytes)")
 
             if svg_origin is None:
                 with self.lock:
@@ -179,14 +194,21 @@ class PlotterController:
             # Handle layer selection
             layer = job_data.get('layer_name', 'all')
 
+            # Track SVG parsing and setup timing
+            timing_stages['svg_setup_start'] = time.time()
+
             if has_progress_assigned:
                 try:
+                    timing_stages['plob_maker_start'] = time.time()
                     nd_plob_maker = NextDraw()
+                    logger.info(f"PLOB NextDraw instance created in {time.time() - timing_stages['plob_maker_start']:.3f}s")
                     output_plob = None
 
                     if layer != "all":
                         print('Create PLOB with Layer Only.', layer)
+                        timing_stages['plob_setup_start'] = time.time()
                         nd_plob_maker.plot_setup(svg_origin)
+                        logger.info(f"PLOB plot_setup completed in {time.time() - timing_stages['plob_setup_start']:.3f}s")
                         if isinstance(job_config, dict):
                             for key, value in job_config.items():
                                 if isinstance(value, dict):
@@ -199,8 +221,12 @@ class PlotterController:
                         nd_plob_maker.options.digest = 2
                         nd_plob_maker.options.mode = "layers"
                         nd_plob_maker.options.layer = int(layer)
+                        timing_stages['plob_update_start'] = time.time()
                         nd_plob_maker.update()
+                        logger.info(f"PLOB update completed in {time.time() - timing_stages['plob_update_start']:.3f}s")
+                        timing_stages['plob_run_start'] = time.time()
                         output_plob = nd_plob_maker.plot_run(True)
+                        logger.info(f"PLOB plot_run completed in {time.time() - timing_stages['plob_run_start']:.3f}s")
                         nd_plob_maker.plot_setup(output_plob)
                     else:
                         nd_plob_maker.plot_setup(svg_origin)
@@ -208,10 +234,16 @@ class PlotterController:
                     nd_plob_maker.options.mode = "utility"
                     nd_plob_maker.options.utility_cmd = "res_adj_mm"
                     nd_plob_maker.options.dist = float(progress_in_mm)
+                    timing_stages['utility_update_start'] = time.time()
                     nd_plob_maker.update();
+                    logger.info(f"Utility update completed in {time.time() - timing_stages['utility_update_start']:.3f}s")
+                    timing_stages['utility_run_start'] = time.time()
                     svg_origin = nd_plob_maker.plot_run(True) #Update SVG origin with drawing that has layer and resume position set.
+                    logger.info(f"Utility plot_run completed in {time.time() - timing_stages['utility_run_start']:.3f}s")
 
+                    timing_stages['main_setup_start'] = time.time()
                     self.nextdraw.plot_setup(svg_origin)
+                    logger.info(f"Main plot_setup completed in {time.time() - timing_stages['main_setup_start']:.3f}s")
                     self.nextdraw.options.mode = "res_plot"
 
                     print(f"Begin plotting with progress assignment. {progress_in_mm}")
@@ -221,7 +253,9 @@ class PlotterController:
                     logger.error(f"Error creating plot with progress assignment: {e}")
 
             else:
+                timing_stages['main_setup_start'] = time.time()
                 self.nextdraw.plot_setup(svg_origin)
+                logger.info(f"Main plot_setup completed in {time.time() - timing_stages['main_setup_start']:.3f}s")
 
                 if layer != "all":
                     self.nextdraw.options.mode = "layers"
@@ -236,13 +270,23 @@ class PlotterController:
                     elif hasattr(self.nextdraw.options, key):
                         setattr(self.nextdraw.options, key, value)
 
+            timing_stages['final_update_start'] = time.time()
             self.nextdraw.update();
+            logger.info(f"Final update() completed in {time.time() - timing_stages['final_update_start']:.3f}s")
+            timing_stages['svg_setup_end'] = time.time()
+            logger.info(f"Total SVG setup time: {timing_stages['svg_setup_end'] - timing_stages['svg_setup_start']:.3f}s")
 
             # Execute plot and capture output
             try:
                 print("!!!!!!!!!!EXECUTING PLOT with mode: ",self.nextdraw.options.mode)
                 logger.info(f"Executing plot with mode: {self.nextdraw.options.mode}, Layer: {layer}")
+                timing_stages['plot_run_start'] = time.time()
+                logger.info(f"Starting plot_run() - Time from request to plot_run start: {timing_stages['plot_run_start'] - start_time:.3f}s")
+                logger.info(f"SVG size: {svg_size_mb:.2f}MB | Pre-plot_run delay: {timing_stages['plot_run_start'] - start_time:.3f}s")
                 result = self.nextdraw.plot_run(True)  # Always return output SVG for pause/resume
+                timing_stages['plot_run_end'] = time.time()
+                logger.info(f"plot_run() completed in {timing_stages['plot_run_end'] - timing_stages['plot_run_start']:.3f}s")
+                logger.info(f"TIMING SUMMARY | Size: {svg_size_mb:.2f}MB | Setup: {timing_stages['plot_run_start'] - start_time:.3f}s | Plot: {timing_stages['plot_run_end'] - timing_stages['plot_run_start']:.3f}s | Total: {timing_stages['plot_run_end'] - start_time:.3f}s")
 
                 # Check if we were paused
                 with self.lock:
