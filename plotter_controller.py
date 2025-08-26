@@ -145,7 +145,7 @@ class PlotterController:
                 self.is_paused = False
                 self.status = "PLOTTING"
 
-            logger.info(f"Starting plot job: {job_data.get('name', 'Unnamed job')}")
+            logger.info(f"Request to begin plot job: {job_data.get('name', 'Unnamed job')}")
             start_time = time.time()
 
             # Create fresh NextDraw instance for this job
@@ -226,8 +226,6 @@ class PlotterController:
                 if layer != "all":
                     self.nextdraw.options.mode = "layers"
                     self.nextdraw.options.layer = int(layer)
-                    logger.info(f"Selected layer {layer}")
-
 
             if isinstance(job_config, dict):
                 for key, value in job_config.items():
@@ -243,7 +241,7 @@ class PlotterController:
             # Execute plot and capture output
             try:
                 print("!!!!!!!!!!EXECUTING PLOT with mode: ",self.nextdraw.options.mode)
-                logger.info(f"Executing plot with mode: {self.nextdraw.options.mode}")
+                logger.info(f"Executing plot with mode: {self.nextdraw.options.mode}, Layer: {layer}")
                 result = self.nextdraw.plot_run(True)  # Always return output SVG for pause/resume
 
                 # Check if we were paused
