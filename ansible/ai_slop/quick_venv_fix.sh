@@ -52,7 +52,7 @@ if [ ! -f "$VENV_DIR/bin/python" ]; then
 
     # Try to install NextDraw
     echo -e "${GREEN}Installing NextDraw library...${NC}"
-    pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip || echo -e "${YELLOW}NextDraw installation failed (may work without plotter)${NC}"
+    pip install https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip || echo -e "${YELLOW}NextDraw installation failed (may work without plotter)${NC}"
 
     deactivate
 else

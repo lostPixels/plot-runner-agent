@@ -136,7 +136,7 @@ if [[ -f "venv/bin/activate" ]]; then
         python -c "import nextdraw" 2>&1 | head -3
 
         echo -e "${YELLOW}⚠${NC} Try reinstalling with:"
-        echo "  source venv/bin/activate && pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip"
+        echo "  source venv/bin/activate && pip install https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip"
     fi
     deactivate
 else
@@ -337,7 +337,7 @@ else
             echo "  cd $APP_DIR && bash deploy/fix_nextdraw_install.sh"
         else
             echo "  cd $APP_DIR && source venv/bin/activate"
-            echo "  pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip"
+            echo "  pip install https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip"
             echo "  sudo systemctl restart $SERVICE_NAME"
         fi
     fi

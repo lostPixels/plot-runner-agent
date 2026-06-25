@@ -161,7 +161,7 @@
         become: yes
         become_user: "{{ app_user }}"
         pip:
-            name: https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+            name: https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
             virtualenv: "{{ venv_dir }}"
         register: nextdraw_install
         ignore_errors: yes

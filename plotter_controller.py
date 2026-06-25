@@ -468,7 +468,7 @@ class PlotterController:
             logger.error(f"Failed to stop: {str(e)}")
             return False
 
-    def execute_utility(self, utility_cmd, options=None):
+    def execute_utility(self, utility_cmd, data=None):
 
         if utility_cmd == "bullseye":
             return self.draw_bullseye()
@@ -497,7 +497,22 @@ class PlotterController:
                 nd.options.mode = "utility"
                 nd.options.utility_cmd = "disable_xy"
                 nd.plot_run()
+            elif utility_cmd == "set_pen_z":
+                print("SET PEN Z to:",data)
+                direction = data["direction"] or "raise"
+                logger.info(f"Setting pen Z to {data['position']}")
+                nd = NextDraw()
+                nd.plot_setup()
+                nd.options.mode = "utility"
 
+                if direction == "raise":
+                    nd.options.utility_cmd = "raise_pen"
+                    nd.options.pen_pos_up = data["position"]
+                elif direction == "lower":
+                    nd.options.utility_cmd = "lower_pen"
+                    nd.options.pen_pos_down = data["position"]
+
+                nd.plot_run()
 
             with self.lock:
                 self.status = "IDLE"

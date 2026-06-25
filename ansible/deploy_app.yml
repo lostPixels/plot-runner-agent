@@ -156,7 +156,7 @@
         become: no
         become_user: "{{ app_user }}"
         pip:
-            name: https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+            name: https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
             virtualenv: "{{ venv_dir }}"
         register: nextdraw_install
         ignore_errors: yes
@@ -176,7 +176,7 @@
               become: no
               become_user: "{{ app_user }}"
               pip:
-                  name: https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+                  name: https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
                   virtualenv: "{{ venv_dir }}"
 
       - name: Configure USB permissions for NextDraw plotters
@@ -426,7 +426,7 @@
                 cd "{{ app_dir }}"
                 source {{ venv_dir }}/bin/activate
                 pip install -r requirements.txt
-                pip install --upgrade https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+                pip install --upgrade https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
                 sudo systemctl restart {{ service_name }}
             dest: "{{ app_dir }}/update.sh"
             mode: "0755"

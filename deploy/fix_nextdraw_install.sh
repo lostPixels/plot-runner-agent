@@ -83,7 +83,7 @@ pip install --upgrade pip
 
 # Install/reinstall NextDraw library
 log "Installing NextDraw library in virtual environment..."
-pip install --upgrade https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+pip install --upgrade https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
 
 if [ $? -ne 0 ]; then
     error "Failed to install NextDraw library. Check the error message above for details."
@@ -124,7 +124,7 @@ chmod +x "$APP_DIR/app.py" 2>/dev/null || true
 chmod +x "$APP_DIR/deploy/venv_check.sh" 2>/dev/null || true
 
 # Create update script if it doesn't exist
-if [ ! -f "$APP_DIR/update.sh" ] || ! grep -q "nextdraw_api.zip" "$APP_DIR/update.sh"; then
+if [ ! -f "$APP_DIR/update.sh" ] || ! grep -q "nd_api_173.zip" "$APP_DIR/update.sh"; then
     log "Creating/updating update script..."
     cat > "$APP_DIR/update.sh" <<'EOF'
 #!/bin/bash
@@ -133,7 +133,7 @@ git pull origin main
 source venv/bin/activate
 pip install -r requirements.txt
 # Also update NextDraw library
-pip install --upgrade https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+pip install --upgrade https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
 sudo systemctl restart nextdraw-api
 EOF
     chmod +x "$APP_DIR/update.sh"

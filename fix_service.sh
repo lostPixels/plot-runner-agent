@@ -72,7 +72,7 @@ pip install -r "$APP_DIR/requirements.txt"
 
 # Install NextDraw library
 log "Installing NextDraw library..."
-pip install --upgrade https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+pip install --upgrade https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
 
 # Update service file
 log "Updating service file to use current user and paths..."

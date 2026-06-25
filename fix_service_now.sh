@@ -94,7 +94,7 @@ if [ ! -d "$APP_DIR/venv" ]; then
 
     # Try to install NextDraw API
     echo -e "${GREEN}Installing NextDraw API...${NC}"
-    pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip || true
+    pip install https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip || true
 
     deactivate
 else

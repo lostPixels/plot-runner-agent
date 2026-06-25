@@ -119,7 +119,7 @@ if [ -f "$VENV_DIR/bin/activate" ]; then
             echo "   → NextDraw version: $ND_VERSION"
         else
             error "NextDraw library is not installed in virtual environment"
-            echo "   → Install with: pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip"
+            echo "   → Install with: pip install https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip"
         fi
 
         # List installed packages
@@ -193,7 +193,7 @@ echo "   cd $APP_DIR"
 echo "   source $VENV_DIR/bin/activate"
 echo ""
 echo "2. Install or reinstall the NextDraw library:"
-echo "   pip install --upgrade https://software-download.bantamtools.com/nd/api/nextdraw_api.zip"
+echo "   pip install --upgrade https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip"
 echo ""
 echo "3. Install other requirements:"
 echo "   pip install -r requirements.txt"

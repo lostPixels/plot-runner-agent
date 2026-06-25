@@ -6,3 +6,4 @@ requests==2.31.0
 watchdog==3.0.0
 pytz
 pyserial
+https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip

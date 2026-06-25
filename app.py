@@ -469,6 +469,7 @@ def utility_command(command):
     """Execute utility commands"""
     try:
         data = request.get_json() or {}
+
         result = plotter_controller.execute_utility(command, data)
         return jsonify({"result": result})
     except Exception as e:

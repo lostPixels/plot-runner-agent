@@ -104,12 +104,12 @@ fi
 
 # Install NextDraw library in virtual environment
 log "Installing NextDraw library in virtual environment..."
-pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+pip install https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
 if [ $? -ne 0 ]; then
     warning "NextDraw installation failed. This might be because we're missing development libraries."
     warning "Installing additional development packages and retrying..."
     sudo apt install -y python3-dev libusb-1.0-0-dev libudev-dev
-    pip install https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+    pip install https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
 fi
 
 # Set up USB permissions for NextDraw
@@ -393,7 +393,7 @@ git pull origin main
 source venv/bin/activate
 pip install -r requirements.txt
 # Also update NextDraw library
-pip install --upgrade https://software-download.bantamtools.com/nd/api/nextdraw_api.zip
+pip install --upgrade https://software-download.bantamtools.com/nd/1_7_3/nd_api_173.zip
 sudo systemctl restart nextdraw-api
 EOF
 chmod +x "$APP_DIR/update.sh"
