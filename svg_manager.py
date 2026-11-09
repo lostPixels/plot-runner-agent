@@ -32,8 +32,12 @@ class SVGManager:
         # Clean up any temp directories on startup
         self._cleanup_temp_dirs()
 
-    def upload_svg(self, file_data: bytes, filename: str) -> Dict[str, Any]:
-        """Upload a new SVG file, replacing any existing one"""
+    def upload_svg(self, file_data: bytes, filename: str, job_id: Optional[str] = None) -> Dict[str, Any]:
+        """Upload a new SVG file, replacing any existing one.
+
+        job_id identifies the parent application's job this SVG belongs to; ARMED
+        requests are only accepted when they name the same job.
+        """
         try:
             with self.svg_lock:
                 # Clear existing SVG if any
@@ -59,6 +63,8 @@ class SVGManager:
                     'svg_file': file_path,
                     'file_size': len(file_data),
                     'original_filename': filename,
+                    'job_id': job_id or None,
+                    'sha256': hashlib.sha256(file_data).hexdigest(),
                     'uploaded_at': datetime.now().isoformat(),
                     'available_layers': [],
                     'svg_dir': svg_dir,
@@ -99,6 +105,7 @@ class SVGManager:
                         'id': svg_id,
                         'svg_dir': svg_dir,
                         'original_filename': chunk_info['filename'],
+                        'job_id': chunk_info.get('job_id') or None,
                         'upload_progress': 0,
                         'uploading': True
                     }
@@ -126,17 +133,21 @@ class SVGManager:
                     safe_filename = f"design_{hashlib.md5(chunk_info['filename'].encode()).hexdigest()[:8]}.svg"
                     final_path = os.path.join(self.current_svg['svg_dir'], safe_filename)
 
+                    digest = hashlib.sha256()
                     with open(final_path, 'wb') as final_file:
                         for i in range(chunk_info['total_chunks']):
                             chunk_path = os.path.join(temp_dir, f"{chunk_file_id}_chunk_{i}")
                             with open(chunk_path, 'rb') as chunk:
-                                final_file.write(chunk.read())
+                                chunk_bytes = chunk.read()
+                                final_file.write(chunk_bytes)
+                                digest.update(chunk_bytes)
                             # Remove chunk after reading
                             os.remove(chunk_path)
 
                     # Update SVG info
                     self.current_svg['svg_file'] = final_path
                     self.current_svg['file_size'] = os.path.getsize(final_path)
+                    self.current_svg['sha256'] = digest.hexdigest()
                     self.current_svg['uploaded_at'] = datetime.now().isoformat()
                     self.current_svg['upload_progress'] = 100
                     self.current_svg['uploading'] = False
@@ -250,6 +261,21 @@ class SVGManager:
                 return None
             return self.current_svg.get('original_filename')
 
+    def get_svg_identity(self) -> Optional[Dict[str, Any]]:
+        """Identify the loaded SVG (None unless fully uploaded).
+
+        Used to check that an armed job and the loaded file belong together.
+        """
+        with self.svg_lock:
+            if not self._is_svg_ready_internal():
+                return None
+            return {
+                'id': self.current_svg['id'],
+                'job_id': self.current_svg.get('job_id'),
+                'sha256': self.current_svg.get('sha256'),
+                'original_filename': self.current_svg.get('original_filename'),
+            }
+
     def get_available_layers(self) -> List[Dict[str, str]]:
         """Get list of available layers in the SVG"""
         with self.svg_lock:
@@ -321,6 +347,8 @@ class SVGManager:
             'file_size': self.current_svg.get('file_size', 0),
             'upload_progress': self.current_svg.get('upload_progress', 0),
             'original_filename': self.current_svg.get('original_filename'),
+            'job_id': self.current_svg.get('job_id'),
+            'sha256': self.current_svg.get('sha256'),
             'uploaded_at': self.current_svg.get('uploaded_at'),
             'available_layers': self.current_svg.get('available_layers', []),
             'is_ready': self._is_svg_ready_internal()

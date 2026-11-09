@@ -7,7 +7,8 @@ Flask API server for controlling a NextDraw plotter from a Raspberry Pi. Accepts
 - **`app.py`** — Flask server, route definitions, background status sync thread
 - **`plotter_controller.py`** — Wraps the NextDraw API; handles job execution, pause/resume, and utility commands
 - **`svg_manager.py`** — Stores the active SVG, extracts layer info, handles chunked uploads
-- **`serial_communication.py`** — Singleton that sends plot timing data to a Lilygo AMOLED display over serial (optional; failures don't block plotting)
+- **`serial_communication.py`** — Serial link to the Plot Runner panel (LilyGo T-Display S3 AMOLED): reconnects, sends `AT`/`ARMED`/`IDLE`/`STATUS`, and dispatches the panel's events
+- **`display_jobs.py`** — Armed-job state: checks an arm request against the loaded SVG, starts the plot when Start is pressed on the panel, keeps the panel in step. The panel is optional; plotting works without it
 - **`config.json`** — Plotter and API settings
 
 ## Deploy
@@ -101,6 +102,18 @@ DELETE /svg/clear        Clear current SVG
 
 SVG uploads replace the current file. Layers are extracted automatically from Inkscape layer groups.
 
+### Arming (Plot Runner panel)
+
+```
+POST   /arm    Arm a layer of the loaded SVG on the panel; plotting starts when Start is pressed
+GET    /arm    Panel state, armed job, last event
+DELETE /arm    Cancel the armed job
+```
+
+Upload the SVG with a `job_id` form field first: `/arm` is refused unless the job matches. See [docs/arming-api.md](docs/arming-api.md) for the fields and responses.
+
+Set `PLOT_RUNNER_DISPLAY_PORT=/dev/ttyACM0` to skip USB auto-detection of the panel.
+
 ### Plotting
 
 ```
@@ -121,7 +134,10 @@ Plot request body (all fields optional):
 ```
 
 - `config_content` — NextDraw option overrides applied to this plot only
-- `time_data` — Sent to the serial display if connected
+- `time_data` — Stored and reported in `/status` while plotting
+- `job_id`, `ink_color`, `ink_name`, `estimated_time`, `elapsed_time` — Shown on the panel's progress countdown (falls back to `time_data.project_duration` / `layer_color`). See [docs/arming-api.md](docs/arming-api.md)
+
+A `POST /plot` replaces any armed job on the panel.
 - `progress_in_mm` — Resume plotting from this position (in mm × 100)
 
 `POST /plot/<layer>` returns `202 Accepted` immediately; the plot runs in a background thread. Poll `/status` to track progress.
