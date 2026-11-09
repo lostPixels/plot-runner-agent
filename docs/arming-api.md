@@ -88,6 +88,7 @@ Content-Type: application/json
   "estimated_time": 4530,
   "svg_sha256": "9f2c…",
   "config_content": { "speed_pendown": 30 },
+  "homing": false,
   "progress_in_mm": 0,
   "time_data": { }
 }
@@ -102,6 +103,7 @@ Content-Type: application/json
 | `estimated_time` | number, seconds | yes | `>= 0`, a JSON number, not a string. Shown on the Armed screen and drives the panel's countdown. Previously sent as `time_data.project_duration`. When resuming with `progress_in_mm`, send the **remaining** time. |
 | `svg_sha256` | string | no | If present, must match the loaded file's `sha256`. Recommended: it catches a stale or partial upload that kept the right `job_id`. |
 | `config_content` | object | no | NextDraw option overrides for this plot, the same as the `POST /plot` body. Stored now and applied when Start is pressed. |
+| `homing` | boolean | no | Whether the plotter homes before plotting. Overrides any `homing` in `config_content`. **Send `false` for plotters without a homing switch, such as the AxiDraw on nd-radius**: otherwise NextDraw stops within a second with "Automatic homing failed", because NextDraw homes by default. Omit it to leave the choice to `config_content`. |
 | `progress_in_mm` | number | no | Resume position, the same as the `POST /plot` body. |
 | `time_data` | object | no | Stored and reported back in `/status` while the plot runs, as before. No longer sent to the panel. |
 
@@ -118,7 +120,7 @@ The panel's line limit is 1023 bytes, so keep `job_id`, `layer_name` and
 | `409` | The SVG's `job_id` differs (`svg_job_id` and `requested_job_id` are returned) |
 | `409` | `svg_sha256` doesn't match (`svg_sha256` of the loaded file is returned) |
 | `404` | `layer_name` isn't in the SVG (`available_layers` is returned) |
-| `409` | The plotter is busy (`plotter_status` isn't `IDLE`) |
+| `409` | The plotter is busy (`plotter_status` is `PLOTTING`, `PAUSED` or `BUSY`; `ERROR` from a failed plot doesn't block) |
 | `503` | The panel isn't connected |
 | `502` / `504` | The panel rejected the request or didn't reply |
 | `200` | Armed. Returns `{"message": "Armed", "armed_job": {...}}` |
@@ -130,7 +132,9 @@ Arming again while a job is armed replaces it. Only one job is armed at a time.
 ### Arm the next layer only after the plotter is idle
 
 Arming is refused while a plot is running. After a plot, wait until
-`GET /status` shows `system.plotter_status == "IDLE"`, then arm the next layer.
+`GET /status` shows `system.plotter_status` as `IDLE` (it finished) or
+`ERROR` (it failed; see [Failed plots](#failed-plots)), then arm the next
+layer.
 
 ## 3. What happens after arming
 
@@ -168,6 +172,7 @@ Content-Type: application/json
   "elapsed_time": 0,
   "svg_sha256": "9f2c…",
   "config_content": { "speed_pendown": 30 },
+  "homing": false,
   "progress_in_mm": 0,
   "time_data": { }
 }
@@ -181,10 +186,12 @@ Content-Type: application/json
 | `estimated_time` | number, seconds | no | Drives the countdown. **Without an estimate (here or in `time_data`), the plot still runs but the panel stays on Idle.** |
 | `elapsed_time` | number, seconds | no | How far into the plot this already is, e.g. when resuming with `progress_in_mm` and `estimated_time` is the job's full length. Defaults to `0`. |
 | `svg_sha256` | string | no | If given, must match the loaded file (`409` otherwise). |
+| `homing` | boolean | no | Same as on `POST /arm`. |
 | `config_content`, `progress_in_mm`, `time_data` | | no | Unchanged. |
 
-A panel field with the wrong type (say `"ink_color": "red"` or
-`"estimated_time": "60"`) gets a `400` and nothing is plotted. As before, it's
+A panel field or `homing` with the wrong type (say `"ink_color": "red"`,
+`"estimated_time": "60"` or `"homing": "false"`) gets a `400` and nothing is
+plotted. As before, it's
 `409` if the plotter is busy and `404` if the layer doesn't exist.
 
 A remote start replaces anything armed (`last_disarm.reason` is
@@ -214,6 +221,26 @@ These apply to both armed and remote plots:
 The countdown is only an estimate. If a plot overruns, the panel goes to
 Idle when its countdown hits zero, while the plotter keeps going.
 
+### Failed plots
+
+When NextDraw aborts a plot, `plotter_status` becomes `ERROR` and
+`system.last_error` says why. Reasons include a homing failure, lost USB, power
+loss, or failing to connect. The panel goes back to Idle. Previously these
+looked like a plot that finished successfully within a second.
+
+| `last_error` contains | Meaning |
+|---|---|
+| `Automatic homing failed … (NextDraw code 106)` | No limit switch was found. Send `"homing": false` for plotters without one. |
+| `Lost USB connection … (NextDraw code 104)` | The plotter's USB was unplugged or dropped. |
+| `Plotter power loss detected (NextDraw code 105)` | The plotter's power supply dropped out. |
+| `Failed to connect … (NextDraw code 101)` | The plotter isn't connected or is busy. |
+
+`ERROR` doesn't block the next plot. The next `POST /arm` or `POST /plot`
+is accepted and clears `last_error`.
+
+Pressing the **pause button on the plotter itself** sets `plotter_status` to
+`PAUSED`, and `POST /plot/resume` continues the plot.
+
 ## 6. Cancel an armed job: `DELETE /arm`
 
 ```
@@ -236,6 +263,7 @@ available on its own from `GET /arm`):
     "current_layer": "1",
     "current_job_id": "poster-07",
     "plot_source": "display",
+    "last_error": null,
     "time_data": null,
     "uptime_start": "…"
   },
@@ -263,6 +291,7 @@ available on its own from `GET /arm`):
 | Field | Meaning |
 |---|---|
 | `system.current_job_id` | Job being plotted (`null` when idle). |
+| `system.last_error` | Why the last plot failed, or `null`. Cleared when the next plot starts. See [Failed plots](#failed-plots). |
 | `system.plot_source` | `"display"` (Start pressed), `"api"` (`POST /plot`), `"bullseye"` or `null`. |
 | `display.armed_job` | Armed and waiting for Start, or `null`. |
 | `display.active_plot` | The running or paused plot, or `null`. `source` is `"display"` (Start pressed) or `"api"` (remote). `shown_on_panel` is `false` when there was no estimate. `elapsed_time` excludes time spent paused. |
@@ -286,7 +315,8 @@ curl -F file=@poster.svg -F job_id=poster-07 $PI/api/svg
 curl -X POST $PI/arm -H 'Content-Type: application/json' -d '{
   "job_id": "poster-07", "layer_name": "1",
   "ink_color": "#1E90FF", "ink_name": "Pilot G2 Blue",
-  "estimated_time": 4530, "config_content": {"speed_pendown": 30}
+  "estimated_time": 4530, "config_content": {"speed_pendown": 30},
+  "homing": false
 }'
 
 curl $PI/status        # poll until plotter_status is IDLE again

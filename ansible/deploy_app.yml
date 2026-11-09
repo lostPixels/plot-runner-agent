@@ -439,6 +439,26 @@
         systemd:
             daemon_reload: yes
 
+      # Other apps that hold port 80 or the plotter/panel USB ports. List them per
+      # host in host_vars/<host>.yml as conflicting_services. They are stopped and
+      # disabled (not removed): re-enable with `systemctl enable --now <name>`.
+      - name: Check for conflicting services
+        command: systemctl cat {{ item }}
+        register: conflicting_service_check
+        loop: "{{ conflicting_services | default([]) }}"
+        changed_when: false
+        failed_when: false
+
+      - name: Stop and disable conflicting services
+        systemd:
+            name: "{{ item.item }}"
+            state: stopped
+            enabled: no
+        loop: "{{ conflicting_service_check.results | default([]) }}"
+        loop_control:
+            label: "{{ item.item }}"
+        when: item.rc == 0
+
       - name: Enable and start services
         systemd:
             name: "{{ item }}"

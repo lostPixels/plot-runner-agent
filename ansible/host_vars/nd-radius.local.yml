@@ -1,0 +1,13 @@
+# nd-radius also has the "Plotter web UI" app (/opt/plotter, plotter-web.service).
+# It binds port 80 (so nginx can't start) and drives the same USB plotter, so it
+# can't run alongside nextdraw-api. The deploy stops and disables it; its files
+# in /opt/plotter and /var/lib/plotter are left alone.
+#
+# Order matters: they are stopped in this order. plotter-keyd (that app's keyboard
+# listener) has Wants=plotter-web and Restart=always, so while it runs it keeps
+# starting plotter-web again, and the stop job gets cancelled. Stop it first.
+#
+# To switch back: sudo systemctl disable --now nextdraw-api nginx && sudo systemctl enable --now plotter-web plotter-keyd
+conflicting_services:
+  - plotter-keyd
+  - plotter-web

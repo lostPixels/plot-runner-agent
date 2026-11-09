@@ -96,6 +96,14 @@ def _normalise_color(value) -> Optional[str]:
     return "#" + match.group(1).upper() if match else None
 
 
+def _validate_homing(p: Dict[str, Any]) -> Optional[bool]:
+    """Optional homing flag: True/False overrides config_content's homing; absent/null leaves it."""
+    homing = p.get("homing")
+    if homing is not None and not isinstance(homing, bool):
+        raise JobRequestError("homing must be true or false")
+    return homing
+
+
 def _valid_job_id(job_id) -> bool:
     if isinstance(job_id, bool):
         return False
@@ -236,6 +244,7 @@ class DisplayJobController:
             body = {}
         identity = self.svg_manager.get_svg_identity()
         screen = self._remote_plot_screen(layer_name, body, identity)
+        homing = _validate_homing(body)
 
         with self._lock:
             token = self._next_token()
@@ -244,6 +253,7 @@ class DisplayJobController:
                 config_overrides=body.get("config_content") or {},
                 time_data=body.get("time_data"),
                 progress_in_mm=body.get("progress_in_mm"),
+                homing=homing,
                 job_id=body.get("job_id") if body.get("job_id") is not None else (identity or {}).get("job_id"),
                 source="api",
                 on_finished=lambda outcome, t=token: self.plot_finished(t, outcome),
@@ -389,6 +399,7 @@ class DisplayJobController:
                 config_overrides=armed["config_content"],
                 time_data=armed["time_data"],
                 progress_in_mm=armed["progress_in_mm"],
+                homing=armed["homing"],
                 job_id=armed["job_id"],
                 source="display",
                 on_finished=lambda outcome, t=token: self.plot_finished(t, outcome),
@@ -555,6 +566,7 @@ class DisplayJobController:
             "ink_name": job.get("ink_name"),
             "estimated_time": estimated,
             "progress_in_mm": job.get("progress_in_mm"),
+            "homing": job.get("homing"),
             "armed_at": job.get("armed_at"),
             "started_at": _now(),
             "svg": identity,
@@ -600,7 +612,7 @@ class DisplayJobController:
     @staticmethod
     def _public_job(job: Dict[str, Any]) -> Dict[str, Any]:
         keys = ("job_id", "layer_name", "ink_color", "ink_name", "estimated_time",
-                "progress_in_mm", "armed_at", "started_at")
+                "progress_in_mm", "homing", "armed_at", "started_at")
         out = {k: job.get(k) for k in keys if k in job}
         if job.get("svg"):
             out["svg_sha256"] = job["svg"].get("sha256")
@@ -706,6 +718,7 @@ class DisplayJobController:
             "config_content": config_content,
             "progress_in_mm": progress_in_mm,
             "time_data": time_data,
+            "homing": _validate_homing(p),
         }
 
     def _remote_plot_screen(self, layer_name: str, body: Dict[str, Any],

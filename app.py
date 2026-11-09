@@ -77,6 +77,10 @@ system_status = {
 # Lock for thread safety
 status_lock = threading.Lock()
 
+# States in which a new plot may start. ERROR is the end state of a failed plot,
+# not a busy plotter; its reason stays in last_error until the next plot starts.
+READY_STATES = ("IDLE", "ERROR")
+
 @app.before_request
 def before_request():
     """Log request start and track timing"""
@@ -123,6 +127,7 @@ def get_status():
                     "current_layer": system_status['current_layer'],
                     "current_job_id": system_status['current_job_id'],
                     "plot_source": system_status['plot_source'],
+                    "last_error": system_status['last_error'],
                     "time_data": system_status['time_data'],
                     "uptime_start": system_status['uptime_start']
                 },
@@ -255,7 +260,7 @@ def plot_layer(layer_name):
 
         # Check if plotter is busy
         with status_lock:
-            if system_status['plotter_status'] != "IDLE":
+            if system_status['plotter_status'] not in READY_STATES:
                 return jsonify({
                     "error": "Plotter is busy",
                     "current_status": system_status['plotter_status']
@@ -320,13 +325,14 @@ def plot_layer(layer_name):
 
 
 def start_plot_job(layer_name, config_overrides=None, time_data=None, progress_in_mm=None,
-                   job_id=None, source="api", on_finished=None, request_start_time=None):
+                   job_id=None, source="api", on_finished=None, request_start_time=None, homing=None):
     """
     Start plotting a layer of the loaded SVG in a background thread.
 
     Used by POST /plot/<layer> and by the panel's Start button (START_PLOT).
     Returns (started, error). If started, on_finished(outcome) is called once the
-    plot ends, with outcome "completed", "paused" or "failed".
+    plot ends, with outcome "completed", "paused" or "failed". homing (True/False)
+    overrides any homing value in config_overrides; None leaves it to the config.
     """
     request_start_time = request_start_time or time.time()
     svg_path = svg_manager.get_svg_file_path()
@@ -336,8 +342,9 @@ def start_plot_job(layer_name, config_overrides=None, time_data=None, progress_i
 
     # Check-and-set under one lock so two starts can't both win.
     with status_lock:
-        if system_status['plotter_status'] != "IDLE":
+        if system_status['plotter_status'] not in READY_STATES:
             return False, f"Plotter is busy ({system_status['plotter_status']})"
+        system_status['last_error'] = None
         system_status['plotter_status'] = "PLOTTING"
         system_status['current_layer'] = layer_name
         system_status['current_job_id'] = job_id
@@ -358,7 +365,8 @@ def start_plot_job(layer_name, config_overrides=None, time_data=None, progress_i
                 config_overrides=config_overrides or {},
                 job_name=f"{svg_name}_{layer_name}",
                 layer_name=layer_name,
-                progress_in_mm=progress_in_mm
+                progress_in_mm=progress_in_mm,
+                homing=homing
             )
 
             controller_end = time.time()
@@ -390,7 +398,7 @@ def start_plot_job(layer_name, config_overrides=None, time_data=None, progress_i
                     logger.info(f"Successfully plotted layer {layer_name}")
                 else:
                     system_status['plotter_status'] = "ERROR"
-                    system_status['last_error'] = "Plot execution failed"
+                    system_status['last_error'] = (result or {}).get('error') or "Plot execution failed"
                     system_status['time_data'] = None
                     logger.error(f"Failed to plot layer {layer_name}")
 
@@ -423,8 +431,9 @@ def start_plot_job(layer_name, config_overrides=None, time_data=None, progress_i
 def start_bullseye_job():
     """Draw the bullseye in the background (the panel's Draw Bullseye button)."""
     with status_lock:
-        if system_status['plotter_status'] != "IDLE":
+        if system_status['plotter_status'] not in READY_STATES:
             return False, f"Plotter is busy ({system_status['plotter_status']})"
+        system_status['last_error'] = None
         system_status['plotter_status'] = "PLOTTING"
         system_status['current_layer'] = None
         system_status['current_job_id'] = None
@@ -450,7 +459,7 @@ def start_bullseye_job():
 
 def is_plotter_idle():
     with status_lock:
-        return system_status['plotter_status'] == "IDLE"
+        return system_status['plotter_status'] in READY_STATES
 
 
 @app.route('/arm', methods=['POST'])

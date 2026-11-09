@@ -139,6 +139,7 @@ Plot request body (all fields optional):
 
 A `POST /plot` replaces any armed job on the panel.
 - `progress_in_mm` — Resume plotting from this position (in mm × 100)
+- `homing` — `true`/`false` overrides `config_content`'s homing (NextDraw defaults to on). Use `false` for plotters without a homing switch, e.g. the AxiDraw on nd-radius
 
 `POST /plot/<layer>` returns `202 Accepted` immediately; the plot runs in a background thread. Poll `/status` to track progress.
 

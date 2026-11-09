@@ -11,6 +11,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# NextDraw stop codes (nd.errors.code after plot_run; may be negative while a
+# plot is still running). These mean the plot did not complete.
+PLOT_FAILURE_CODES = {
+    101: "Failed to connect to the plotter",
+    104: "Lost USB connection to the plotter",
+    105: "Plotter power loss detected",
+    106: "Automatic homing failed (no limit switch? send homing: false for this plotter)",
+}
+PAUSE_BUTTON_CODE = 102  # Paused with the button on the plotter; resumable.
+
+
+def plot_stop_code(nextdraw_instance):
+    """NextDraw's stop code for the last plot_run(), as a positive int (0 = no error)."""
+    try:
+        return abs(int(nextdraw_instance.errors.code or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
 class PlotterController:
     """Controls NextDraw plotter operations"""
 
@@ -270,6 +289,8 @@ class PlotterController:
                     elif hasattr(self.nextdraw.options, key):
                         setattr(self.nextdraw.options, key, value)
 
+            self._apply_homing(self.nextdraw, job_data)
+
             timing_stages['final_update_start'] = time.time()
             self.nextdraw.update();
             logger.info(f"Final update() completed in {time.time() - timing_stages['final_update_start']:.3f}s")
@@ -301,6 +322,24 @@ class PlotterController:
                         self._cleanup_state()
                         self.status = "IDLE"
                         return {"success": False, "error": "Job was cancelled"}
+
+                    # plot_run() returns normally when NextDraw aborts (homing
+                    # failure, lost USB, ...); the reason is only in errors.code.
+                    stop_code = plot_stop_code(self.nextdraw)
+                    if stop_code == PAUSE_BUTTON_CODE:
+                        self.is_paused = True
+                        self.status = "PAUSED"
+                        self.pause_data = result
+                        logger.info("Job paused by the plotter's pause button; can be resumed")
+                        return {"success": False, "message": "Job was paused by the plotter button and can be resumed"}
+                    if stop_code in PLOT_FAILURE_CODES:
+                        error = f"{PLOT_FAILURE_CODES[stop_code]} (NextDraw code {stop_code})"
+                        logger.error(f"Plot did not complete: {error}")
+                        self._cleanup_state()
+                        self.status = "ERROR"
+                        self.last_error = error
+                        self.stats["failed_jobs"] += 1
+                        return {"success": False, "error": error, "error_code": stop_code}
 
                 # Job completed successfully
                 plot_time = time.time() - start_time
@@ -406,15 +445,28 @@ class PlotterController:
                                 elif hasattr(self.nextdraw.options, key):
                                     setattr(self.nextdraw.options, key, value)
 
+                        self._apply_homing(self.nextdraw, self.current_job)
+
                     # Execute resumed plot
                     result = self.nextdraw.plot_run(True)
 
                     # Check final state
+                    stop_code = plot_stop_code(self.nextdraw)
                     with self.lock:
-                        if self.is_paused:
+                        if self.is_paused or stop_code == PAUSE_BUTTON_CODE:
                             # Paused again during resume
+                            self.is_paused = True
+                            self.status = "PAUSED"
                             self.pause_data = result
                             logger.info("Job paused again during resume")
+                        elif not self.is_plotting:
+                            logger.info("Resumed job was stopped")
+                        elif stop_code in PLOT_FAILURE_CODES:
+                            error = f"{PLOT_FAILURE_CODES[stop_code]} (NextDraw code {stop_code})"
+                            logger.error(f"Resumed plot did not complete: {error}")
+                            self._cleanup_state()
+                            self.status = "ERROR"
+                            self.last_error = error
                         else:
                             # Resume completed successfully
                             logger.info("Resume completed successfully")
@@ -575,7 +627,24 @@ class PlotterController:
         except Exception as e:
             return {"connected": False, "message": str(e)}
 
-    def plot_file(self, svg_path, config_overrides=None, job_name=None, layer_name=None, progress_in_mm=0):
+    @staticmethod
+    def _apply_homing(nextdraw_instance, job_data):
+        """Apply the job's explicit homing flag, if any. Runs after config overrides so it wins.
+
+        Plotters without a homing switch (e.g. an AxiDraw) need homing off, or
+        plot_run() aborts straight away with "Automatic homing failed".
+        """
+        homing = (job_data or {}).get('homing')
+        if homing is None:
+            return
+        if hasattr(nextdraw_instance.options, 'homing'):
+            nextdraw_instance.options.homing = bool(homing)
+            logger.info(f"Homing {'enabled' if homing else 'disabled'} for this job")
+        else:
+            logger.warning("This NextDraw API has no 'homing' option; ignoring homing flag")
+
+    def plot_file(self, svg_path, config_overrides=None, job_name=None, layer_name=None, progress_in_mm=0,
+                  homing=None):
         """Plot an SVG file with optional layer filtering"""
         try:
             # Check if file exists
@@ -588,7 +657,8 @@ class PlotterController:
                 'name': job_name or f'Plot_{int(time.time())}',
                 'config_overrides': config_overrides or {},
                 'layer_name': layer_name,
-                'progress_in_mm': progress_in_mm
+                'progress_in_mm': progress_in_mm,
+                'homing': homing
             }
 
             # Execute the job
