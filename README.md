@@ -9,6 +9,7 @@ Flask API server for controlling a NextDraw plotter from a Raspberry Pi. Accepts
 - **`svg_manager.py`** — Stores the active SVG, extracts layer info, handles chunked uploads
 - **`serial_communication.py`** — Serial link to the Plot Runner panel (LilyGo T-Display S3 AMOLED): reconnects, sends `AT`/`ARMED`/`IDLE`/`STATUS`, and dispatches the panel's events
 - **`display_jobs.py`** — Armed-job state: checks an arm request against the loaded SVG, starts the plot when Start is pressed on the panel, keeps the panel in step. The panel is optional; plotting works without it
+- **`wifi/`** — WiFi fallback hotspot watchdog and its page (separate root service, see below)
 - **`config.json`** — Plotter and API settings
 
 ## Deploy
@@ -59,6 +60,30 @@ sudo systemctl stop nextdraw-api
 sudo systemctl restart nextdraw-api
 sudo journalctl -u nextdraw-api -f
 ```
+
+## WiFi fallback hotspot
+
+If a Pi can't join any saved WiFi network for 90 seconds (and has no wired link), it starts its own WPA2 hotspot named after its hostname, e.g. `nd-radius-direct`. Join it, then open **http://10.42.0.1/network/** (or `http://10.42.0.1:8080/`). While the hotspot is up, the Pi tries its saved networks every 5 minutes, but only when no device is connected to the hotspot.
+
+The page shows the current state and lets you join a network, forget saved networks, start the hotspot now, try WiFi now, and change the timings. On WiFi it's at `http://<host>.local/network/`.
+
+**Password.** Set it in `.env` at the repo root on the computer you deploy from (gitignored, and never copied to the Pi):
+
+```bash
+PLOT_RUNNER_HOTSPOT_PASSWORD=at-least-8-chars
+```
+
+An exported `PLOT_RUNNER_HOTSPOT_PASSWORD` takes precedence over `.env`. The deploy writes the password into NetworkManager's root-only hotspot profile. If it isn't set anywhere, a Pi that already has the profile keeps its password; one that doesn't fails the deploy before anything changes. To update just the hotspot: `ansible-playbook -i inventory.ini deploy_app.yml --tags wifi`.
+
+**How it stays reachable**
+
+- The watchdog (`wifi/wifi_fallback.py`, service `plot-runner-wifi`) uses system Python and the standard library only. It's installed in `/usr/local/lib/plot-runner-wifi`, not the app directory, so a broken app or venv doesn't affect it. systemd restarts it forever.
+- Every switch ends with the Pi on WiFi or the hotspot up. Joining a new network adds a profile; if it fails, only that profile is deleted and the Pi returns to the previous network or the hotspot. Saved networks are never changed or removed except with **Forget**.
+- The fallback can't be turned off from the page, and the timings are clamped (hotspot after 30–900 s, retry every 2–60 min).
+- It turns the WiFi radio back on if it's off, and restarts NetworkManager if it stops answering.
+- **Escape hatch:** if the Pi joins a network you can't reach it on, put an empty file named `force-hotspot` (or `force-hotspot.txt`) on the SD card's boot partition. The hotspot stays up while the file exists; delete it to go back to WiFi.
+
+Only Pis running NetworkManager get the hotspot (Raspberry Pi OS bookworm and later); others are skipped with a message. `deploy/install.sh` doesn't install it. Logs: `sudo journalctl -u plot-runner-wifi -f`.
 
 ## Configuration
 

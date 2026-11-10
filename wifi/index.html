@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plotter WiFi</title>
+<style>
+  :root { --bg:#f6f6f4; --card:#fff; --fg:#1d1d1b; --muted:#6b6b66; --line:#e2e2dd; --accent:#2f6fde; --ok:#1f8a4c; --warn:#b26b00; --bad:#c23b32; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151514; --card:#1f1f1d; --fg:#ececea; --muted:#9a9a94; --line:#33332f; --accent:#6d9cf0; --ok:#4cc27e; --warn:#e0a03a; --bad:#ec6b61; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, -apple-system, sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 10px; }
+  .sub { color:var(--muted); margin:0 0 18px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  .state { display:flex; align-items:center; gap:10px; font-size:17px; font-weight:600; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); flex:none; }
+  .dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); }
+  .muted { color:var(--muted); }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; margin-top:10px; }
+  .kv dt { color:var(--muted); } .kv dd { margin:0; overflow-wrap:anywhere; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 0; border-top:1px solid var(--line); }
+  .row:first-child { border-top:0; }
+  .row .name { overflow-wrap:anywhere; }
+  .tag { font-size:12px; color:var(--muted); margin-left:6px; }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:7px; padding:7px 12px; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.link { border:0; background:none; color:var(--accent); padding:4px 0; }
+  button:disabled { opacity:.5; cursor:default; }
+  .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  label { display:block; margin:10px 0 4px; color:var(--muted); font-size:13px; }
+  input[type=text], input[type=password], input[type=number] { width:100%; font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--fg); }
+  .check { display:flex; align-items:center; gap:6px; color:var(--fg); font-size:14px; }
+  .note { font-size:13px; color:var(--muted); margin:10px 0 0; }
+  .banner { border-radius:8px; padding:10px 12px; margin-bottom:14px; font-weight:500; }
+  .banner.busy { background:color-mix(in srgb, var(--accent) 15%, transparent); }
+  .banner.err { background:color-mix(in srgb, var(--bad) 15%, transparent); }
+  .banner.good { background:color-mix(in srgb, var(--ok) 15%, transparent); }
+  .grid3 { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
+  @media (max-width:480px) { .grid3 { grid-template-columns:1fr; } }
+  details summary { cursor:pointer; color:var(--muted); }
+  ol.log { list-style:none; padding:0; margin:10px 0 0; font:12px/1.5 ui-monospace, Menlo, monospace; }
+  ol.log li { padding:2px 0; overflow-wrap:anywhere; }
+  .bars { font-family:ui-monospace, monospace; letter-spacing:-1px; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="host">Plotter WiFi</h1>
+  <p class="sub">WiFi and fallback hotspot</p>
+  <div id="banner"></div>
+
+  <section>
+    <div class="state"><span class="dot" id="dot"></span><span id="state">Loading…</span></div>
+    <dl class="kv" id="facts"></dl>
+    <div class="actions" id="modeActions"></div>
+  </section>
+
+  <section>
+    <h2>Join a network</h2>
+    <div id="scan"></div>
+    <button class="link" id="rescan">Scan again</button>
+    <form id="join">
+      <label for="ssid">Network name</label>
+      <input type="text" id="ssid" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32" required>
+      <label for="pw">Password (blank for an open network)</label>
+      <input type="password" id="pw" autocomplete="new-password" maxlength="64">
+      <label class="check"><input type="checkbox" id="hidden"> Hidden network</label>
+      <div class="actions"><button class="primary" type="submit">Connect</button></div>
+      <p class="note" id="joinNote"></p>
+    </form>
+  </section>
+
+  <section>
+    <h2>Saved networks</h2>
+    <div id="saved"></div>
+    <p class="note">The Pi joins these automatically. Forgetting every one is safe: the hotspot comes up.</p>
+  </section>
+
+  <section>
+    <h2>Hotspot timing</h2>
+    <form id="settings">
+      <div class="grid3">
+        <div><label for="fallback_delay">Start hotspot after (s)</label><input type="number" id="fallback_delay"></div>
+        <div><label for="retry_interval">Retry WiFi every (s)</label><input type="number" id="retry_interval"></div>
+        <div><label for="manual_hold">Manual hotspot hold (min)</label><input type="number" id="manual_hold"></div>
+      </div>
+      <div class="actions"><button type="submit">Save timing</button></div>
+      <p class="note">WiFi retries wait while a device is connected to the hotspot. The hotspot password is set at deploy time from <code>PLOT_RUNNER_HOTSPOT_PASSWORD</code>.</p>
+    </form>
+  </section>
+
+  <section>
+    <details><summary>Activity</summary><ol class="log" id="log"></ol></details>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const dur = s => s == null ? '' : s >= 3600 ? `${Math.floor(s/3600)}h ${Math.round(s%3600/60)}m` : s >= 60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`;
+const bars = n => '▂▄▆█'.slice(0, Math.max(1, Math.ceil(n / 25)));
+let st = null, flash = null, settingsLoaded = false;
+
+async function post(body, confirmText) {
+  if (confirmText && !confirm(confirmText)) return;
+  try {
+    const r = await fetch('api/action', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const j = await r.json().catch(() => ({}));
+    flash = r.ok ? null : {cls:'err', text:j.error || `Request failed (${r.status})`};
+  } catch (e) {
+    flash = {cls:'busy', text:'Lost contact with the Pi. That is expected while it switches networks; this page reconnects on its own.'};
+  }
+  refresh();
+}
+
+function render() {
+  const s = st, h = s.hotspot;
+  $('host').textContent = s.hostname;
+  document.title = `${s.hostname} WiFi`;
+
+  const hotspot = s.mode === 'hotspot' || s.mode === 'other-ap';
+  let dot = 'warn', text, facts = [];
+  if (s.mode === 'wifi') { dot = 'ok'; text = `On WiFi “${s.wifi_ssid || ''}”`; }
+  else if (hotspot) { dot = 'warn'; text = `Hotspot on: “${h.ssid}”`; }
+  else if (s.mode === 'no-networkmanager') { dot = 'bad'; text = 'NetworkManager is not answering'; }
+  else if (s.mode === 'missing') { dot = 'bad'; text = 'No WiFi adapter found'; }
+  else { text = s.mode === 'connecting' ? 'Connecting to WiFi…' : 'Not connected to WiFi'; }
+  $('dot').className = 'dot ' + dot;
+  $('state').textContent = text;
+
+  if (s.ip) facts.push(['Address', s.ip]);
+  if (s.wired) facts.push(['Wired', 'Connected']);
+  if (hotspot) {
+    facts.push(['Hotspot page', `http://${h.address}/network/`]);
+    if (h.clients != null) facts.push(['Devices on hotspot', h.clients]);
+    if (s.forced) facts.push(['WiFi retry', 'Off while force-hotspot is on the boot partition']);
+    else if (s.hold_left) facts.push(['WiFi retry', `Held by request, ${dur(s.hold_left)} left`]);
+    else if (h.in_use) facts.push(['WiFi retry', 'Waiting until nobody is using the hotspot']);
+    else facts.push(['WiFi retry', `in ${dur(s.retry_in)}`]);
+  } else {
+    facts.push(['Fallback hotspot', h.ssid]);
+    if (s.hotspot_in != null) facts.push(['Hotspot starts', s.hotspot_in ? `in ${dur(s.hotspot_in)}` : 'now']);
+  }
+  $('facts').innerHTML = facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+
+  const busy = !!s.busy;
+  $('modeActions').innerHTML = hotspot
+    ? `<button class="primary" data-act="wifi" ${busy ? 'disabled' : ''}>Try WiFi now</button>`
+    : `<button data-act="hotspot" ${busy ? 'disabled' : ''}>Start hotspot</button>`;
+
+  let banner = flash;
+  if (s.busy) banner = {cls:'busy', text:`${s.busy}…`};
+  else if (s.last_attempt && s.last_attempt.status === 'failed') banner = banner || {cls:'err', text:`Could not join “${s.last_attempt.ssid}”: ${s.last_attempt.error}`};
+  else if (s.last_attempt && s.last_attempt.status === 'ok' && s.mode === 'wifi') banner = banner || {cls:'good', text:`Joined “${s.last_attempt.ssid}” at ${s.last_attempt.ip || 'a new address'}`};
+  $('banner').innerHTML = banner ? `<div class="banner ${banner.cls}">${esc(banner.text)}</div>` : '';
+
+  const scan = s.scan.filter(n => n.ssid !== h.ssid);
+  $('scan').innerHTML = scan.length
+    ? scan.slice(0, 12).map(n => `<div class="row"><button class="link name" data-ssid="${esc(n.ssid)}">${esc(n.ssid)}</button>
+        <span class="muted"><span class="bars">${bars(n.signal)}</span>${n.security ? ' 🔒' : ''}${n.saved ? '<span class="tag">saved</span>' : ''}</span></div>`).join('')
+    : `<p class="muted">${hotspot ? 'No scan while the hotspot is on.' : 'No networks found yet.'}</p>`;
+  $('rescan').hidden = hotspot;
+  if (scan.length && s.scan_age != null) $('scan').insertAdjacentHTML('beforeend', `<p class="note">Scanned ${dur(s.scan_age)} ago${hotspot ? ', before the hotspot started' : ''}.</p>`);
+  $('joinNote').textContent = hotspot
+    ? `The hotspot goes off for up to a minute while the Pi tries. If it works, find the Pi at http://${s.hostname}.local/network/ on that network. If not, the hotspot comes back and the error shows here.`
+    : 'The Pi leaves the current network to try this one. If it fails, it goes back to the current network, or to the hotspot.';
+
+  $('saved').innerHTML = s.saved.length
+    ? s.saved.map(p => `<div class="row"><span class="name">${esc(p.ssid || p.name)}${p.active ? '<span class="tag">connected</span>' : ''}${p.hidden ? '<span class="tag">hidden</span>' : ''}${p.autoconnect ? '' : '<span class="tag">auto-join off</span>'}</span>
+        <button data-forget="${esc(p.uuid)}" data-label="${esc(p.ssid || p.name)}" data-active="${p.active ? 1 : ''}" ${busy ? 'disabled' : ''}>Forget</button></div>`).join('')
+    : '<p class="muted">None. The hotspot stays on until you join a network.</p>';
+
+  if (!settingsLoaded) {
+    for (const k of Object.keys(s.settings)) { const el = $(k); el.value = s.settings[k]; [el.min, el.max] = s.limits[k]; }
+    settingsLoaded = true;
+  }
+  $('log').innerHTML = s.events.map(e => `<li><span class="muted">${esc(e.at)}</span> ${esc(e.msg)}</li>`).join('');
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('api/status', {cache:'no-store'});
+    st = await r.json();
+    if (flash && flash.cls === 'busy') flash = null;
+    render();
+  } catch (e) {
+    $('dot').className = 'dot bad';
+    $('state').textContent = 'Can’t reach the Pi right now. Retrying…';
+  }
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('button');
+  if (!t || !st) return;
+  if (t.dataset.ssid != null) { $('ssid').value = t.dataset.ssid; $('pw').focus(); }
+  else if (t.dataset.act === 'wifi') post({action:'wifi'});
+  else if (t.dataset.act === 'hotspot') post({action:'hotspot'}, `Start the hotspot now? The Pi leaves WiFi, so this page will drop. Join “${st.hotspot.ssid}” and open http://${st.hotspot.address}/network/. It stays up for ${st.settings.manual_hold} min, then WiFi is retried.`);
+  else if (t.dataset.forget) post({action:'forget', uuid:t.dataset.forget}, `Forget “${t.dataset.label}”?` + (t.dataset.active ? ' The Pi is on this network now: it will disconnect, and the hotspot comes up if no other saved network is in range.' : ''));
+  else if (t.id === 'rescan') post({action:'scan'});
+});
+
+$('join').addEventListener('submit', e => {
+  e.preventDefault();
+  const ssid = $('ssid').value;
+  post({action:'join', ssid, password:$('pw').value, hidden:$('hidden').checked},
+    `Connect to “${ssid}”? This page will drop while the Pi switches.`);
+  $('pw').value = '';
+});
+
+$('settings').addEventListener('submit', e => {
+  e.preventDefault();
+  const settings = {};
+  for (const k of ['fallback_delay', 'retry_interval', 'manual_hold']) settings[k] = Number($(k).value);
+  settingsLoaded = false;
+  post({action:'settings', settings});
+});
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

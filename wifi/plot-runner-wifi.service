@@ -1,0 +1,20 @@
+[Unit]
+Description=Plot Runner WiFi fallback hotspot
+After=NetworkManager.service
+Wants=NetworkManager.service
+# Never give up restarting: this is how the Pi stays reachable.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# System Python and the standard library only, so a broken app venv can't stop it.
+ExecStart=/usr/bin/python3 -u /usr/local/lib/plot-runner-wifi/wifi_fallback.py
+Restart=always
+RestartSec=5
+StateDirectory=plot-runner-wifi
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plot-runner-wifi
+
+[Install]
+WantedBy=multi-user.target

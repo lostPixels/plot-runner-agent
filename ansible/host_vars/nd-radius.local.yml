@@ -11,3 +11,10 @@
 conflicting_services:
   - plotter-keyd
   - plotter-web
+
+# That app also left a hotspot profile with autoconnect on. It would come up in
+# place of the nd-radius-direct fallback hotspot, so the deploy turns its
+# autoconnect off (the profile is kept).
+# To switch back: sudo nmcli connection modify plotter-ap connection.autoconnect yes
+conflicting_hotspot_profiles:
+  - plotter-ap

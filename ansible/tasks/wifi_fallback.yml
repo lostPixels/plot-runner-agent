@@ -1,0 +1,146 @@
+# WiFi fallback hotspot: see "WiFi fallback hotspot" in README.md.
+#
+# The hotspot password is PLOT_RUNNER_HOTSPOT_PASSWORD from .env in the repo root
+# (or the environment) on the machine running Ansible: see vars/hotspot.yml.
+# It is written only into NetworkManager's root-only profile.
+# None of this touches the WiFi connection the Pi is on now: the hotspot profile
+# has autoconnect off, and only the watchdog brings it up.
+
+- name: Check NetworkManager is running
+  command: systemctl is-active NetworkManager
+  register: wifi_nm_active
+  changed_when: false
+  failed_when: false
+
+- name: Report hosts without NetworkManager
+  debug:
+      msg: "NetworkManager isn't running on {{ inventory_hostname }}; the WiFi fallback hotspot was not installed."
+  when: wifi_nm_active.stdout != 'active'
+
+- name: Install the WiFi fallback hotspot
+  when: wifi_nm_active.stdout == 'active'
+  block:
+      - name: Check for an existing hotspot profile
+        stat:
+            path: "{{ hotspot_keyfile }}"
+        register: hotspot_keyfile_stat
+
+      # An existing profile keeps its password when the variable isn't set.
+      - name: Check the hotspot password
+        assert:
+            that:
+                - hotspot_password | length > 0 or hotspot_keyfile_stat.stat.exists
+                - hotspot_password | length == 0 or (hotspot_password | length >= 8 and hotspot_password | length <= 63)
+                - hotspot_password == hotspot_password | trim
+            fail_msg: >-
+                Set PLOT_RUNNER_HOTSPOT_PASSWORD in .env at the repo root on this computer
+                (PLOT_RUNNER_HOTSPOT_PASSWORD=...): 8-63 characters, no leading or trailing spaces.
+            quiet: yes
+
+      - name: Install iw (counts devices on the hotspot)
+        apt:
+            name: iw
+            state: present
+            update_cache: yes
+            cache_valid_time: 3600
+
+      - name: Write the hotspot profile
+        copy:
+            dest: "{{ hotspot_keyfile }}"
+            owner: root
+            group: root
+            mode: "0600"
+            content: |
+                [connection]
+                id=plot-runner-hotspot
+                uuid={{ ('plot-runner-hotspot-' ~ inventory_hostname) | to_uuid }}
+                type=wifi
+                interface-name=wlan0
+                autoconnect=false
+
+                [wifi]
+                mode=ap
+                ssid={{ ansible_hostname[:25] }}-direct
+                band=bg
+                channel=6
+
+                [wifi-security]
+                key-mgmt=wpa-psk
+                proto=rsn;
+                pairwise=ccmp;
+                group=ccmp;
+                pmf=1
+                psk={{ hotspot_password | replace('\\', '\\\\') }}
+
+                [ipv4]
+                method=shared
+                address1=10.42.0.1/24
+
+                [ipv6]
+                method=disabled
+        when: hotspot_password | length > 0
+        register: hotspot_profile
+        no_log: true
+
+      - name: Load the hotspot profile into NetworkManager
+        command: nmcli connection load {{ hotspot_keyfile }}
+        when: hotspot_profile is changed
+
+      # Other hotspot profiles with autoconnect on would come up in place of ours.
+      # They are kept: re-enable with nmcli connection modify <name> connection.autoconnect yes
+      - name: Turn off autoconnect on other hotspot profiles
+        shell: |
+            nmcli -t -f NAME connection show | grep -Fxq -- "$NAME" || exit 0
+            [ "$(nmcli -g connection.autoconnect connection show id "$NAME")" = yes ] || exit 0
+            nmcli connection modify id "$NAME" connection.autoconnect no && echo changed
+        environment:
+            NAME: "{{ item }}"
+        register: other_hotspot
+        changed_when: "'changed' in other_hotspot.stdout"
+        loop: "{{ conflicting_hotspot_profiles | default([]) }}"
+
+      - name: Create the WiFi fallback directory
+        file:
+            path: /usr/local/lib/plot-runner-wifi
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+      - name: Install the WiFi fallback daemon and page
+        copy:
+            src: "{{ local_project_root }}/wifi/{{ item }}"
+            dest: "/usr/local/lib/plot-runner-wifi/{{ item }}"
+            owner: root
+            group: root
+            mode: "0644"
+        loop:
+            - wifi_fallback.py
+            - index.html
+        register: wifi_files
+
+      - name: Install the WiFi fallback service
+        copy:
+            src: "{{ local_project_root }}/wifi/plot-runner-wifi.service"
+            dest: /etc/systemd/system/plot-runner-wifi.service
+            owner: root
+            group: root
+            mode: "0644"
+        register: wifi_unit
+
+      # A restart is safe: on WiFi it does nothing, and with the hotspot up it carries on.
+      - name: Start the WiFi fallback service
+        systemd:
+            name: plot-runner-wifi
+            enabled: yes
+            daemon_reload: yes
+            state: "{{ 'restarted' if (wifi_files is changed or wifi_unit is changed or hotspot_profile is changed) else 'started' }}"
+
+      - name: Wait for the WiFi fallback page
+        uri:
+            url: http://127.0.0.1:8080/api/status
+            status_code: 200
+        register: wifi_page
+        until: wifi_page.status == 200
+        retries: 15
+        delay: 2

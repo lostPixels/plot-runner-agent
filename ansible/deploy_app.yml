@@ -13,6 +13,8 @@
       nginx_enabled: "/etc/nginx/sites-enabled/{{ app_name }}"
       local_project_root: "{{ playbook_dir }}/.." # Path to project root from ansible directory
       frontend_dir: "{{ local_project_root }}/frontend" # Frontend directory path
+  vars_files:
+      - vars/hotspot.yml # WiFi fallback hotspot password (from .env or the environment)
 
   pre_tasks:
       - name: Build frontend locally before deployment
@@ -43,6 +45,11 @@
               when: not frontend_exists.stat.exists
 
   tasks:
+      # First, so a missing hotspot password fails before anything else changes.
+      - name: WiFi fallback hotspot
+        import_tasks: tasks/wifi_fallback.yml
+        tags: wifi
+
       - name: Update APT cache and upgrade system packages
         apt:
             update_cache: yes
@@ -343,6 +350,19 @@
                         proxy_set_header X-Content-Length $content_length;
                     }
 
+                    # WiFi fallback page (plot-runner-wifi, also on port 8080 directly)
+                    location = /network {
+                        return 301 /network/;
+                    }
+
+                    location /network/ {
+                        proxy_pass http://127.0.0.1:8080/;
+                        proxy_set_header Host $host;
+                        proxy_set_header X-Real-IP $remote_addr;
+                        proxy_connect_timeout 5s;
+                        proxy_read_timeout 30s;
+                    }
+
                     # Static file serving for uploads/downloads
                     location /uploads/ {
                         alias {{ app_dir }}/uploads/;
@@ -496,6 +516,18 @@
                   - "80"
                   - "443"
                   - "5000"
+                  - "8080"
+
+            # The hotspot hands out addresses and DNS itself: without these, devices can't join it.
+            - name: Allow DHCP and DNS for hotspot devices
+              when: ufw_check.rc == 0
+              ufw:
+                  rule: allow
+                  port: "{{ item }}"
+                  proto: udp
+              loop:
+                  - "53"
+                  - "67"
 
             - name: Enable ufw
               when: ufw_check.rc == 0
@@ -533,6 +565,8 @@
                   API Endpoint: http://{{ ansible_default_ipv4.address }}/
                   Health Check: http://{{ ansible_default_ipv4.address }}/health
                   Status: http://{{ ansible_default_ipv4.address }}/status
+                  WiFi / hotspot: http://{{ ansible_default_ipv4.address }}/network/
+                  Fallback hotspot: {{ ansible_hostname[:25] }}-direct (page at http://10.42.0.1/network/)
 
                 Application Directory: {{ app_dir }}
                 Configuration: {{ app_dir }}/config.json

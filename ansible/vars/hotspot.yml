@@ -1,0 +1,12 @@
+# WiFi fallback hotspot password, read on this computer (never from the Pi):
+# PLOT_RUNNER_HOTSPOT_PASSWORD from the environment, else from .env in the repo root.
+# .env lines look like PLOT_RUNNER_HOTSPOT_PASSWORD=secret (quotes and "export " are optional).
+hotspot_env_lines: "{{ (lookup('file', local_project_root ~ '/.env', errors='ignore') or '').splitlines() }}"
+hotspot_password: >-
+    {{ lookup('env', 'PLOT_RUNNER_HOTSPOT_PASSWORD') or (hotspot_env_lines
+    | select('match', '^\s*(export\s+)?PLOT_RUNNER_HOTSPOT_PASSWORD\s*=')
+    | map('regex_replace', '^[^=]*=', '') | map('trim')
+    | map('regex_replace', '^"(.*)"$', '\1')
+    | map('regex_replace', "^'(.*)'$", '\1')
+    | list | last | default('')) }}
+hotspot_keyfile: /etc/NetworkManager/system-connections/plot-runner-hotspot.nmconnection
